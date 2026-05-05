@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.65] - 2026-05-05
+
+### Fixed
+- Resolved two Supervisor warnings observed on install:
+  - `App has full device access, and selective device access` — removed `uart: true` since it's redundant with `full_access: true`
+  - `App config 'arch' uses deprecated values ['armv7', 'armhf', 'i386']` — trimmed `arch:` and `build.yaml` to the still-supported `amd64` and `aarch64` only
+- (The `build.yaml is deprecated` notice from Supervisor remains — moving build params into the Dockerfile is a larger change and tracked separately.)
+
 ## [1.2.64] - 2026-05-05
 
 ### Fixed
