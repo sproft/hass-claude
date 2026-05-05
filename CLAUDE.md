@@ -20,7 +20,7 @@ This file contains instructions for Claude Code when working on this repository.
   - `config.yaml` - Add-on configuration (bump version here)
   - `Dockerfile` - Container build instructions
   - `build.yaml` - Multi-architecture build settings
-  - `DOCS.md` - User documentation
+  - `README.md` - User documentation
   - `CHANGELOG.md` - Version history (**update before commits**)
   - `apparmor.txt` - Security profile
 
@@ -34,6 +34,6 @@ When making changes that require a new release:
 ## Home Assistant Add-on Notes
 
 - Rebuild button only rebuilds from cached config
-- To pick up config.yaml changes: uninstall/reinstall or bump version and update
+- To pick up `config.yaml` changes: uninstall/reinstall or bump version and update
 - Base images use s6-overlay v3 - be careful with init configuration
-- `init: true` uses Docker's tini, `init: false` uses s6-overlay's /init
+- `init: true` uses Docker's tini, `init: false` uses s6-overlay's `/init`

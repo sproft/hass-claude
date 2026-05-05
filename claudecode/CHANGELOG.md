@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.64] - 2026-05-05
+
+### Fixed
+- "Killed on startup" on Proxmox HAOS and other small-VM setups (community thread posts 74/75/77):
+  - `auto_update_claude` now defaults to `false` so `npm` doesn't run on every restart
+  - When auto-update is enabled, it runs in the background with a 90s timeout (no longer blocks ttyd from starting)
+  - Added `NODE_OPTIONS=--max-old-space-size=512` to cap npm's heap and avoid OOM kills
+  - Reduced tmux `history-limit` from 20,000 → 5,000 lines (saves memory per pane)
+  - Healthcheck `start-period` raised from 10s → 120s so Supervisor doesn't kill the addon while it's still booting
+- Auto-update reliability (community thread posts 11/26/33): replaced `npm update -g` (often a no-op for global packages) with `npm install -g @anthropic-ai/claude-code@latest`
+- OAuth auth-code paste flow (community thread posts 3/4/17/19/56/61/62/65/71): tmux now has bracketed-paste passthrough and `set-clipboard on`, plus expanded README troubleshooting steps
+
+### Changed
+- `session_persistence` default flipped from `true` → `false`. tmux's mouse-mode interferes with right-click paste during the OAuth flow, which is the #1 source of new-user friction. Users who want detach/reattach can still opt in.
+- Removed Playwright MCP integration and the standalone Playwright Browser add-on. Claude Code's first-party WebFetch / WebSearch tools cover most use cases and the Playwright wiring was a maintenance burden.
+- Repository scoped down to a single Claude Code add-on (removed `auto-monocle`).
+- Source URL pointed at sproft fork.
+
 ## [1.2.63] - 2026-02-23
 
 ### Fixed

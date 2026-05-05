@@ -98,8 +98,10 @@ claude --continue
 | `terminal_font_size` | Font size (10-24) | 14 |
 | `terminal_theme` | dark or light | dark |
 | `working_directory` | Start directory | /homeassistant |
-| `session_persistence` | Use tmux for persistent sessions | true |
-| `auto_update_claude` | Auto-update Claude Code on startup | true |
+| `session_persistence` | Use tmux for persistent sessions | false |
+| `auto_update_claude` | Auto-update Claude Code on startup (runs in background, with timeout) | false |
+
+> **Note:** `session_persistence` and `auto_update_claude` both default to `false` to keep startup fast and prevent OOM kills on small VMs (e.g. Proxmox HAOS with limited RAM). Turn them on if you want long-running sessions across reconnects or always-latest Claude Code.
 
 ## File Locations
 
@@ -160,19 +162,19 @@ If clicking the link doesn't work, hold `Ctrl+Shift` while selecting the URL wit
 - ✅ Can detach and reattach to running sessions
 - ✅ Long-running Claude tasks continue in background
 - ✅ Mouse wheel scrolling works (enters copy mode automatically)
-- ✅ 20,000 line scrollback buffer
+- ✅ 5,000 line scrollback buffer
 - ⚠️ Use middle-click or Shift+Insert to paste (right-click paste may not work)
 
-**Without tmux (`session_persistence: false`):**
+**Without tmux (`session_persistence: false`, default):**
 - ✅ Native browser scrolling
 - ✅ Simpler terminal behavior
-- ✅ Standard copy/paste behavior
+- ✅ Standard copy/paste behavior — easier OAuth auth code paste
 - ❌ Session lost on browser refresh
 - ❌ Session lost if add-on restarts
 
 **Recommendation:**
-- Use `session_persistence: true` (default) if you run long tasks or need to survive disconnects
-- Use `session_persistence: false` if you need standard copy/paste behavior
+- Default `session_persistence: false` is best for first-time setup — copy/paste during the OAuth flow is far less fiddly without tmux.
+- Switch to `session_persistence: true` once you're authenticated and want long-running sessions to survive disconnects.
 
 ## Security
 
@@ -212,8 +214,8 @@ Claude Code manages its own authentication. If you have issues:
 
 ### Session not persisting
 
-1. Ensure `session_persistence` is set to true
-2. The session is named "claude" - it will auto-attach on reconnect
+1. Ensure `session_persistence` is set to `true` (default is `false` in 1.2.64+)
+2. The session is named "claude" — it will auto-attach on reconnect
 
 ### Configuration changes not applying
 
@@ -221,7 +223,39 @@ After changing configuration:
 1. Save the configuration
 2. Restart the add-on completely
 
+### Add-on is killed on startup ("Killed" in logs)
+
+Reported on Proxmox HAOS and other small-VM setups. The container starts, ttyd comes up, but `claude` or `npm` get killed by the OOM killer mid-boot.
+
+Mitigations applied in this fork (1.2.64+):
+- `auto_update_claude` defaults to **false** so npm doesn't run a global install on every restart
+- When auto-update is enabled, it runs in the background with a 90s timeout and a 512 MB Node heap cap (`NODE_OPTIONS=--max-old-space-size=512`)
+- tmux scrollback reduced from 20,000 → 5,000 lines
+- Healthcheck `start-period` raised to 120s so Supervisor doesn't restart the addon while it's still booting
+
+If you still see kills:
+1. Increase the VM's RAM (2 GB+ recommended)
+2. Keep `auto_update_claude: false` and update manually with `npm install -g @anthropic-ai/claude-code@latest`
+3. Set `session_persistence: false`
+
+### `npm update` never picks up new Claude Code versions
+
+Earlier versions used `npm update -g`, which is buggy for global packages and often left users stuck on the originally-installed version. This fork now uses `npm install -g @anthropic-ai/claude-code@latest` (when `auto_update_claude: true`), which always pulls the latest published release.
+
+You can also update manually from the terminal:
+
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+### Authentication: "400 error" or can't paste the auth code
+
+The OAuth code is long. Common causes:
+- The terminal has wrapped the auth URL across lines and you copied a partial code. Zoom out (`Ctrl+-`) until the URL fits on one line.
+- tmux is intercepting the paste. Use `Shift+Insert` (or middle-click) — `Ctrl+V` does not work in the terminal.
+- The code expired. Re-run `claude` to get a fresh URL.
+
 ## Support
 
-- [GitHub Issues](https://github.com/robsonfelix/robsonfelix-hass-addons/issues)
+- [GitHub Issues](https://github.com/sproft/hass-claude/issues)
 - [Home Assistant Community](https://community.home-assistant.io/)

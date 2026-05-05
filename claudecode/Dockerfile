@@ -2,10 +2,9 @@ ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
 # Labels
-LABEL maintainer="Robson Felix"
 LABEL org.opencontainers.image.title="Claude Code for Home Assistant"
 LABEL org.opencontainers.image.description="Claude Code CLI with web terminal and HA integration"
-LABEL org.opencontainers.image.source="https://github.com/robsonfelix/robsonfelix-hass-addons"
+LABEL org.opencontainers.image.source="https://github.com/sproft/hass-claude"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Environment setup
@@ -76,9 +75,7 @@ RUN apk add --no-cache --virtual .build-deps \
     && apk del .build-deps \
     && apk add --no-cache libmodbus
 
-# Pre-cache Playwright MCP server (npx cache avoids /usr/local/bin/mcp conflict with hass-mcp)
 ENV NPM_CONFIG_CACHE=/root/.npm
-RUN npx @playwright/mcp --version || true
 
 # Install Home Assistant CLI (ha command)
 RUN case "${BUILD_ARCH}" in \
@@ -97,14 +94,18 @@ RUN mkdir -p \
     /root/.config \
     /root/.local/bin
 
-# Configure tmux with large scrollback buffer and scroll support
+# Configure tmux with sane defaults for the HA web terminal
+# - 5000 line history (lower than 20000 to avoid OOM kills on small VMs)
+# - bracketed paste enabled so OAuth tokens paste cleanly without enter-on-newline
+# - mouse on for scroll, but xterm-keys to keep modifier shortcuts working
 RUN cat > /root/.tmux.conf << 'EOF'
-set -g history-limit 20000
-# Disable alternate screen buffer to allow terminal scrollback
+set -g history-limit 5000
 set -ga terminal-overrides ',xterm*:smcup@:rmcup@'
-# Enable mouse support for scrolling (but may affect copy/paste)
 set -g mouse on
-# Bind mouse wheel to scroll through history in copy mode
+set -g xterm-keys on
+set -s set-clipboard on
+# Bracketed paste: tmux >= 3.2 enables this by default; force it for older builds
+set -g allow-passthrough on
 bind -n WheelUpPane if-shell -F -t = "#{mouse_any_flag}" "send-keys -M" "if -Ft= '#{pane_in_mode}' 'send-keys -M' 'select-pane -t=; copy-mode -e; send-keys -M'"
 bind -n WheelDownPane select-pane -t= \; send-keys -M
 EOF
@@ -140,8 +141,8 @@ ENV PATH="/root/.local/bin:${PATH}"
 # Set working directory
 WORKDIR /homeassistant
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+# Health check - long start-period because npm update on slow VMs can take >30s
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
     CMD curl -sf http://localhost:7681/ || exit 1
 
 # Startup script that reads config and persists Claude auth
@@ -215,25 +216,9 @@ CMD ["/bin/bash", "-c", "\
   if [ ! -L /root/.claude.json ]; then touch $PERSIST_DIR/.claude.json; rm -f /root/.claude.json; ln -s $PERSIST_DIR/.claude.json /root/.claude.json; fi && \
   FONT_SIZE=$(jq -r '.terminal_font_size // 14' /data/options.json) && \
   THEME=$(jq -r '.terminal_theme // \"dark\"' /data/options.json) && \
-  SESSION_PERSIST=$(jq -r '.session_persistence // true' /data/options.json) && \
+  SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
-  ENABLE_PLAYWRIGHT=$(jq -r '.enable_playwright_mcp // false' /data/options.json) && \
-  PLAYWRIGHT_HOST=$(jq -r '.playwright_cdp_host // \"\"' /data/options.json) && \
-  if [ -z \"$PLAYWRIGHT_HOST\" ] && [ \"$ENABLE_PLAYWRIGHT\" = \"true\" ]; then \
-    echo '[INFO] Auto-detecting Playwright Browser hostname...' && \
-    PLAYWRIGHT_HOST=$(curl -s -H \"Authorization: Bearer $SUPERVISOR_TOKEN\" http://supervisor/addons | jq -r '.data.addons[] | select(.slug | endswith(\"playwright-browser\") or endswith(\"_playwright-browser\")) | .hostname' | head -1) && \
-    if [ -n \"$PLAYWRIGHT_HOST\" ] && [ \"$PLAYWRIGHT_HOST\" != \"null\" ]; then \
-      echo \"[INFO] Found Playwright Browser: $PLAYWRIGHT_HOST\"; \
-    else \
-      echo '[WARN] Playwright Browser add-on not found, using default hostname'; \
-      PLAYWRIGHT_HOST=\"playwright-browser\"; \
-    fi; \
-  fi && \
-  AUTO_UPDATE=$(jq -r '.auto_update_claude // true' /data/options.json) && \
-  if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
-    echo '[INFO] Checking for Claude Code updates...' && \
-    npm update -g @anthropic-ai/claude-code 2>/dev/null || echo '[WARN] Update check failed, continuing...'; \
-  fi && \
+  AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   claude mcp remove homeassistant -s user 2>/dev/null || true && \
   claude mcp remove playwright -s user 2>/dev/null || true && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
@@ -246,13 +231,14 @@ CMD ["/bin/bash", "-c", "\
   else \
     echo '[INFO] MCP disabled'; \
   fi && \
-  if [ \"$ENABLE_PLAYWRIGHT\" = \"true\" ]; then \
-    claude mcp add-json playwright \"{\\\"command\\\":\\\"npx\\\",\\\"args\\\":[\\\"--no-install\\\",\\\"@playwright/mcp\\\",\\\"--cdp-endpoint\\\",\\\"http://${PLAYWRIGHT_HOST}:9222\\\"]}\" -s user && \
-    echo \"[INFO] Playwright MCP enabled (CDP: http://${PLAYWRIGHT_HOST}:9222)\"; \
-    echo '[INFO] Make sure the Playwright Browser add-on is installed and running'; \
+  if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
+    echo '[INFO] Updating Claude Code in background (timeout 90s)...'; \
+    ( timeout 90 npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-update.log 2>&1 \
+        && echo '[INFO] Claude Code update finished' \
+        || echo '[WARN] Claude Code update failed/timed out (see /tmp/claude-update.log)' ) & \
   else \
-    echo '[INFO] Playwright MCP disabled'; \
-  fi && \
+    echo '[INFO] auto_update_claude disabled - skipping update'; \
+  fi; \
   if [ \"$THEME\" = \"dark\" ]; then \
     COLORS='background=#1e1e2e,foreground=#cdd6f4,cursor=#f5e0dc'; \
   else \

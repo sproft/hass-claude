@@ -1,8 +1,8 @@
 name: Claude Code
 description: Run Claude Code AI assistant inside Home Assistant to create automations, debug issues, and manage your smart home configuration
-version: "1.2.63"
+version: "1.2.64"
 slug: claudecode
-url: https://github.com/robsonfelix/robsonfelix-hass-addons
+url: https://github.com/sproft/hass-claude
 arch:
   - amd64
   - aarch64
@@ -33,17 +33,13 @@ map:
   - backup:ro
 options:
   enable_mcp: true
-  enable_playwright_mcp: false
-  playwright_cdp_host: ""
   terminal_font_size: 14
   terminal_theme: dark
   working_directory: /homeassistant
-  session_persistence: true
-  auto_update_claude: true
+  session_persistence: false
+  auto_update_claude: false
 schema:
   enable_mcp: bool
-  enable_playwright_mcp: bool
-  playwright_cdp_host: str?
   terminal_font_size: int(10,24)
   terminal_theme: list(dark|light)
   working_directory: str
@@ -51,3 +47,4 @@ schema:
   auto_update_claude: bool
 environment:
   TERM: xterm-256color
+  NODE_OPTIONS: "--max-old-space-size=512"
