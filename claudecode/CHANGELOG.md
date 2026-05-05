@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - Resolved two Supervisor warnings observed on install:
   - `App has full device access, and selective device access` — removed `uart: true` since it's redundant with `full_access: true`
   - `App config 'arch' uses deprecated values ['armv7', 'armhf', 'i386']` — trimmed `arch:` and `build.yaml` to the still-supported `amd64` and `aarch64` only
+- First-launch `jq: error: Could not open file /root/.claude/settings.json: No such file or directory` — startup now creates an empty `settings.json` if missing before merging pre-authorized tools, and falls back to a warning instead of an error if jq still fails. Without this fix, the pre-auth list silently never landed and every read tool prompted for confirmation in the first `claude` session.
 - (The `build.yaml is deprecated` notice from Supervisor remains — moving build params into the Dockerfile is a larger change and tracked separately.)
 
 ## [1.2.64] - 2026-05-05
