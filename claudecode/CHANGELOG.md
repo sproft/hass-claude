@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [1.2.67] - 2026-05-08
 
+### Removed
+- `pymodbus` and `pyserial` from the `pip install` line. They were inherited from the upstream repository ("for Modbus operations") but nothing in this addon actually uses them: Modbus is handled by Home Assistant's own integration, not by code inside the Claude Code container. Drops a few MB off the image and a few seconds off the build. Flagged by @wmaker in the community thread.
+
 ### Fixed
 - Auto-update of the Claude Code CLI failing/timing out on slow VMs (issue #6, "Still won't update"). The reported log repeated `[WARN] Claude Code update failed/timed out (see /tmp/claude-update.log)` on every restart. Root cause was the hard-coded `timeout 90` wrapper around `npm install -g @anthropic-ai/claude-code@latest`, which is often not enough for `npm` to resolve the registry, fetch the tarball, and install on a memory- or bandwidth-tight Proxmox VM.
 

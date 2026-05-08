@@ -56,8 +56,8 @@ RUN case "${BUILD_ARCH}" in \
 # Install Claude Code via npm
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install hass-mcp for Home Assistant integration and pymodbus for Modbus operations
-RUN pip3 install --no-cache-dir --break-system-packages hass-mcp pymodbus pyserial
+# Install hass-mcp for Home Assistant integration
+RUN pip3 install --no-cache-dir --break-system-packages hass-mcp
 
 # Install mbpoll (Modbus command line tool) from source
 RUN apk add --no-cache --virtual .build-deps \
