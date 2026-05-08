@@ -219,6 +219,7 @@ CMD ["/bin/bash", "-c", "\
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
+  UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
   SETTINGS_FILE=/root/.claude/settings.json && \
   CLAUDE_JSON=/root/.claude.json && \
   mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
@@ -242,10 +243,16 @@ CMD ["/bin/bash", "-c", "\
     echo '[INFO] MCP disabled'; \
   fi && \
   if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
-    echo '[INFO] Updating Claude Code in background (timeout 90s)...'; \
-    ( timeout 90 npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-update.log 2>&1 \
-        && echo '[INFO] Claude Code update finished' \
-        || echo '[WARN] Claude Code update failed/timed out (see /tmp/claude-update.log)' ) & \
+    UPDATE_LOG=/tmp/claude-update.log; \
+    echo \"[INFO] Updating Claude Code in background (timeout ${UPDATE_TIMEOUT}s)...\"; \
+    ( echo \"--- $(date -u +%Y-%m-%dT%H:%M:%SZ) starting npm install -g @anthropic-ai/claude-code@latest (timeout ${UPDATE_TIMEOUT}s) ---\" >> \"$UPDATE_LOG\"; \
+      if timeout \"$UPDATE_TIMEOUT\" npm install -g @anthropic-ai/claude-code@latest >> \"$UPDATE_LOG\" 2>&1; then \
+        echo '[INFO] Claude Code update finished'; \
+      else \
+        rc=$?; \
+        echo \"[WARN] Claude Code update failed/timed out (exit $rc, see $UPDATE_LOG). Last lines:\"; \
+        tail -n 10 \"$UPDATE_LOG\" 2>/dev/null | sed 's/^/  | /'; \
+      fi ) & \
   else \
     echo '[INFO] auto_update_claude disabled - skipping update'; \
   fi; \

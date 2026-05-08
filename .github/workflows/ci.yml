@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint and config sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: claudecode/Dockerfile
+          # DL3008/DL3013/DL3018: pinning every apt/pip/apk package version is
+          # impractical for an HA addon image; cadence is owned by the base image.
+          # DL4006: the CMD is a single `&&` chain, no pipes, so set -o pipefail
+          # would not buy us anything.
+          ignore: DL3008,DL3013,DL3018,DL4006
+          failure-threshold: warning
+
+      - name: Validate YAML config files parse
+        run: |
+          python3 - <<'PY'
+          import yaml
+          for p in ("claudecode/config.yaml", "claudecode/build.yaml", "repository.yaml"):
+              with open(p) as f:
+                  yaml.safe_load(f)
+              print(f"ok: {p}")
+          PY
+
+      - name: Version matches CHANGELOG entry
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('claudecode/config.yaml'))['version'])")
+          echo "config.yaml version: $VERSION"
+          if ! grep -qE "^## \[${VERSION}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}\$" claudecode/CHANGELOG.md; then
+              echo "::error file=claudecode/CHANGELOG.md::Missing entry '## [$VERSION] - YYYY-MM-DD' for current version"
+              exit 1
+          fi
+
+      - name: options and schema keys are in sync
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          cfg = yaml.safe_load(open("claudecode/config.yaml"))
+          missing = [k for k in ("options", "schema") if k not in cfg]
+          if missing:
+              print(f"::error::config.yaml missing keys: {missing}")
+              sys.exit(1)
+          opts, schema = set(cfg["options"]), set(cfg["schema"])
+          if opts != schema:
+              if opts - schema:
+                  print(f"::error::options without schema entry: {sorted(opts - schema)}")
+              if schema - opts:
+                  print(f"::error::schema entries without an options default: {sorted(schema - opts)}")
+              sys.exit(1)
+          print(f"ok: {len(opts)} options, schema in sync")
+          PY
+
+  boot-script-shell:
+    name: Boot script syntax and shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Extract embedded boot script
+        run: python3 .github/scripts/extract-boot-script.py > /tmp/boot.sh
+
+      - name: bash -n (parse-only syntax check)
+        run: bash -n /tmp/boot.sh
+
+      - name: shellcheck (advisory)
+        # Advisory: the extracted script is one long joined line so location
+        # info is approximate, and several `$VAR` expansions are intentionally
+        # word-split. Keep the check non-blocking until the boot logic is
+        # promoted to a standalone boot.sh tracked in the repo.
+        run: |
+          shellcheck \
+            -e SC2086 -e SC2155 -e SC2046 -e SC2016 -e SC1009 -e SC1073 -e SC1072 \
+            /tmp/boot.sh || true
+
+  build:
+    name: Docker build smoke (amd64)
+    runs-on: ubuntu-latest
+    needs: [lint, boot-script-shell]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build addon image
+        uses: docker/build-push-action@v5
+        with:
+          context: claudecode
+          file: claudecode/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: hass-claude-test:amd64
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.13-alpine3.21
+            BUILD_ARCH=amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Expected tools are installed
+        run: |
+          docker run --rm hass-claude-test:amd64 sh -eu -c '
+            command -v claude   >/dev/null && echo "claude:   $(claude --version 2>&1 | head -n1)"
+            command -v jq       >/dev/null && echo "jq:       $(jq --version)"
+            command -v ttyd     >/dev/null && echo "ttyd:     installed"
+            command -v node     >/dev/null && echo "node:     $(node --version)"
+            command -v npm      >/dev/null && echo "npm:      $(npm --version)"
+            command -v hass-mcp >/dev/null && echo "hass-mcp: installed"
+            command -v tmux     >/dev/null && echo "tmux:     $(tmux -V)"
+            command -v docker   >/dev/null && echo "docker:   $(docker --version)"
+            command -v rg       >/dev/null && echo "rg:       $(rg --version | head -n1)"
+          '
+
+      - name: Boot smoke runs the real script with ttyd stubbed out
+        run: |
+          set -euo pipefail
+          mkdir -p smoke/data
+          cat > smoke/data/options.json <<'EOF'
+          {
+            "enable_mcp": true,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300
+          }
+          EOF
+          # Pull the actual boot script out of the Dockerfile and replace the
+          # tail `exec ttyd ...` with a marker echo so the script returns.
+          python3 .github/scripts/extract-boot-script.py > smoke/boot-real.sh
+          sed -E 's|exec ttyd .*$|echo "[smoke] boot reached ttyd launch (stubbed)"|' \
+            smoke/boot-real.sh > smoke/boot-smoke.sh
+          docker run --rm \
+            -v "$PWD/smoke/data:/data:ro" \
+            -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot.log
+          # Required boot-script log lines.
+          grep -q '\[INFO\] MCP configured with Home Assistant integration' smoke/boot.log
+          grep -q '\[INFO\] Pre-authorized read-only MCP tools'             smoke/boot.log
+          grep -q '\[INFO\] auto_update_claude disabled - skipping update'  smoke/boot.log
+          grep -q '\[smoke\] boot reached ttyd launch (stubbed)'            smoke/boot.log
+
+      - name: Boot smoke covers the failure-tail path on a forced timeout
+        run: |
+          set -euo pipefail
+          mkdir -p smoke/data-update
+          # auto_update_claude=true with a 1s timeout forces the failure path
+          # so we can exercise the new tail-on-failure / append-log code.
+          cat > smoke/data-update/options.json <<'EOF'
+          {
+            "enable_mcp": true,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": true,
+            "claude_update_timeout": 1
+          }
+          EOF
+          python3 .github/scripts/extract-boot-script.py > smoke/boot-real.sh
+          sed -E 's|exec ttyd .*$|wait; echo "[smoke] boot reached ttyd (stubbed); waited for background update"|' \
+            smoke/boot-real.sh > smoke/boot-smoke-update.sh
+          docker run --rm \
+            -v "$PWD/smoke/data-update:/data:ro" \
+            -v "$PWD/smoke/boot-smoke-update.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-update.log
+          grep -q '\[INFO\] Updating Claude Code in background (timeout 1s)' smoke/boot-update.log
+          grep -q '\[WARN\] Claude Code update failed/timed out'             smoke/boot-update.log
+          # Tail-on-failure must produce at least one indented line.
+          grep -qE '^  \| '                                                  smoke/boot-update.log
