@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.68] - 2026-05-09
+
+### Documentation
+- Renamed "add-on" / "addon" to "app" across user-facing prose: top-level README, `claudecode/README.md`, `CLAUDE.md`, the embedded `CLAUDE.md` written by the boot script (Dockerfile lines 157 and 161), the `auto_update_claude` description in `translations/en.yaml` / `es.yaml` / `pt-BR.yaml`, the `# Add-on data` comment in `apparmor.txt`, and the `Build addon image` step name plus a hadolint inline comment in `.github/workflows/ci.yml`. Tracks Home Assistant's own terminology change, flagged by @Sir_Goodenough in the community thread. Fixed identifiers that ride upstream slugs are intentionally left alone: `supervisor_add_addon_repository` (HA Supervisor URL), `addon_config:rw` (HA app map type), `/addon_configs/` (HA mount path), `robsonfelix-hass-addons` (upstream repo name), and historical CHANGELOG entries for releases prior to 1.2.68. Adds a Terminology section to `CLAUDE.md` documenting the split.
+- Tightened the wording in the just-shipped 1.2.67 entry to use the new term ("addon log/shell" → "app log/shell", "addon image" → "app image", "in this addon" → "in this app").
+
 ## [1.2.67] - 2026-05-08
 
 ### Removed
-- `pymodbus` and `pyserial` from the `pip install` line. They were inherited from the upstream repository ("for Modbus operations") but nothing in this addon actually uses them: Modbus is handled by Home Assistant's own integration, not by code inside the Claude Code container. Drops a few MB off the image and a few seconds off the build. Flagged by @wmaker in the community thread.
+- `pymodbus` and `pyserial` from the `pip install` line. They were inherited from the upstream repository ("for Modbus operations") but nothing in this app actually uses them: Modbus is handled by Home Assistant's own integration, not by code inside the Claude Code container. Drops a few MB off the image and a few seconds off the build. Flagged by @wmaker in the community thread.
 
 ### Fixed
 - Auto-update of the Claude Code CLI failing/timing out on slow VMs (issue #6, "Still won't update"). The reported log repeated `[WARN] Claude Code update failed/timed out (see /tmp/claude-update.log)` on every restart. Root cause was the hard-coded `timeout 90` wrapper around `npm install -g @anthropic-ai/claude-code@latest`, which is often not enough for `npm` to resolve the registry, fetch the tarball, and install on a memory- or bandwidth-tight Proxmox VM.
@@ -13,13 +19,13 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - New `claude_update_timeout` option (default `300`, range `30..1800`). When `auto_update_claude` is enabled, the boot script now uses this value as the `timeout` for the background `npm install`. The update is already non-blocking (it runs after ttyd is up), so a longer cap is safe.
 - `/tmp/claude-update.log` is now appended to instead of overwritten on every boot, and each run is prefixed with a UTC timestamp header. Failure trails survive restarts so users no longer need to catch the file on the right boot.
-- On update failure or timeout, the boot script now tails the last 10 lines of `/tmp/claude-update.log` into the addon log (prefixed `  | `), so the actual `npm` error is visible without dropping into the addon shell.
+- On update failure or timeout, the boot script now tails the last 10 lines of `/tmp/claude-update.log` into the app log (prefixed `  | `), so the actual `npm` error is visible without dropping into the app shell.
 
 ### Added
 - GitHub Actions CI (`.github/workflows/ci.yml`):
   - `lint` job: hadolint on the Dockerfile, YAML parse check on `config.yaml` / `build.yaml` / `repository.yaml`, version-vs-CHANGELOG consistency check (enforces the rule from `CLAUDE.md`), and an `options` ↔ `schema` key sync check.
   - `boot-script-shell` job: extracts the embedded `CMD ["/bin/bash","-c", "..."]` boot script via `.github/scripts/extract-boot-script.py`, runs `bash -n` for syntax (blocking) and `shellcheck` (advisory).
-  - `build` job: `docker buildx` of the addon image for `linux/amd64` (using GitHub Actions cache), verifies expected tools (`claude`, `jq`, `ttyd`, `node`, `npm`, `hass-mcp`, `tmux`, `docker`, `rg`) are present, and runs the real boot script against a stub `/data/options.json` with `exec ttyd ...` swapped for a marker echo. Asserts the expected `[INFO] MCP configured ...`, `[INFO] Pre-authorized read-only MCP tools`, and `[INFO] auto_update_claude disabled - skipping update` log lines fire. A second smoke run uses `auto_update_claude: true` with a 1-second timeout to exercise the new `[WARN] ... failed/timed out` + tail-on-failure path.
+  - `build` job: `docker buildx` of the app image for `linux/amd64` (using GitHub Actions cache), verifies expected tools (`claude`, `jq`, `ttyd`, `node`, `npm`, `hass-mcp`, `tmux`, `docker`, `rg`) are present, and runs the real boot script against a stub `/data/options.json` with `exec ttyd ...` swapped for a marker echo. Asserts the expected `[INFO] MCP configured ...`, `[INFO] Pre-authorized read-only MCP tools`, and `[INFO] auto_update_claude disabled - skipping update` log lines fire. A second smoke run uses `auto_update_claude: true` with a 1-second timeout to exercise the new `[WARN] ... failed/timed out` + tail-on-failure path.
 
 ## [1.2.66] - 2026-05-07
 

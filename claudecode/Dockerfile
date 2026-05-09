@@ -154,11 +154,11 @@ CMD ["/bin/bash", "-c", "\
   PERSIST_DIR=/homeassistant/.claudecode && \
   mkdir -p $PERSIST_DIR/config /root/.config && \
   printf '%s\n' \
-    '# Claude Code - Home Assistant Add-on' \
+    '# Claude Code - Home Assistant App' \
     '' \
     '## Path Mapping' \
     '' \
-    'In this add-on container, paths are mapped differently than HA Core:' \
+    'In this app container, paths are mapped differently than HA Core:' \
     '- \\`/homeassistant\\` = HA config directory (equivalent to \\`/config\\` in HA Core)' \
     '- \\`/config\\` does NOT exist - always use \\`/homeassistant\\`' \
     '' \

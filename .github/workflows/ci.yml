@@ -23,7 +23,7 @@ jobs:
         with:
           dockerfile: claudecode/Dockerfile
           # DL3008/DL3013/DL3018: pinning every apt/pip/apk package version is
-          # impractical for an HA addon image; cadence is owned by the base image.
+          # impractical for an HA app image; cadence is owned by the base image.
           # DL4006: the CMD is a single `&&` chain, no pipes, so set -o pipefail
           # would not buy us anything.
           ignore: DL3008,DL3013,DL3018,DL4006
@@ -104,7 +104,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build addon image
+      - name: Build app image
         uses: docker/build-push-action@v5
         with:
           context: claudecode

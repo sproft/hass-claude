@@ -28,11 +28,11 @@ claude "Why isn't my motion sensor automation working?"
 
 ## Setup
 
-### 1. Install the Add-on
+### 1. Install the App
 
 1. Add the repository to Home Assistant
-2. Install the "Claude Code" add-on
-3. Start the add-on
+2. Install the "Claude Code" app
+3. Start the app
 4. Open the Web UI from the sidebar
 
 ### 2. Authenticate with Claude Code
@@ -44,7 +44,7 @@ On first launch, Claude Code will prompt you to authenticate:
 3. Follow the authentication prompts
 4. Your credentials are stored securely by Claude Code
 
-**Note**: The add-on does NOT require you to enter API keys in the configuration. Claude Code handles authentication itself, storing credentials securely in its own configuration directory. This is more secure than storing keys in Home Assistant's add-on config.
+**Note**: The app does NOT require you to enter API keys in the configuration. Claude Code handles authentication itself, storing credentials securely in its own configuration directory. This is more secure than storing keys in Home Assistant's app config.
 
 ## Using Claude Code
 
@@ -115,7 +115,7 @@ claude --continue
 
 ## Session Persistence
 
-When `session_persistence` is enabled, the add-on uses tmux to maintain your terminal session. This means:
+When `session_persistence` is enabled, the app uses tmux to maintain your terminal session. This means:
 
 - Your session survives browser refreshes
 - You can disconnect and reconnect without losing context
@@ -170,7 +170,7 @@ If clicking the link doesn't work, hold `Ctrl+Shift` while selecting the URL wit
 - ✅ Simpler terminal behavior
 - ✅ Standard copy/paste behavior — easier OAuth auth code paste
 - ❌ Session lost on browser refresh
-- ❌ Session lost if add-on restarts
+- ❌ Session lost if app restarts
 
 **Recommendation:**
 - Default `session_persistence: false` is best for first-time setup — copy/paste during the OAuth flow is far less fiddly without tmux.
@@ -179,14 +179,14 @@ If clicking the link doesn't work, hold `Ctrl+Shift` while selecting the URL wit
 ## Security
 
 ### Authentication
-- **No API keys in add-on config**: Claude Code handles authentication itself
+- **No API keys in app config**: Claude Code handles authentication itself
 - Credentials are stored securely in Claude Code's own directory (`~/.claude/`)
 - This is more secure than storing keys in Home Assistant's configuration
 
 ### Container Security
 - The Supervisor token is automatically managed and not exposed
 - File access is limited to mapped directories
-- The add-on runs in an isolated container
+- The app runs in an isolated container
 
 ## Troubleshooting
 
@@ -202,15 +202,15 @@ Claude Code manages its own authentication. If you have issues:
 ### hass-mcp not working
 
 1. Verify `enable_mcp` is true in configuration
-2. Check add-on logs for connection errors
-3. Restart the add-on after configuration changes
+2. Check the app logs for connection errors
+3. Restart the app after configuration changes
 
 ### Terminal not loading
 
-1. Check that the add-on is running (green indicator)
+1. Check that the app is running (green indicator)
 2. Try refreshing the page
 3. Check browser console for errors
-4. Review add-on logs for ttyd errors
+4. Review the app logs for ttyd errors
 
 ### Session not persisting
 
@@ -221,9 +221,9 @@ Claude Code manages its own authentication. If you have issues:
 
 After changing configuration:
 1. Save the configuration
-2. Restart the add-on completely
+2. Restart the app completely
 
-### Add-on is killed on startup ("Killed" in logs)
+### App is killed on startup ("Killed" in logs)
 
 Reported on Proxmox HAOS and other small-VM setups. The container starts, ttyd comes up, but `claude` or `npm` get killed by the OOM killer mid-boot.
 
@@ -231,7 +231,7 @@ Mitigations applied in this fork (1.2.64+):
 - `auto_update_claude` defaults to **false** so npm doesn't run a global install on every restart
 - When auto-update is enabled, it runs in the background with a 90s timeout and a 512 MB Node heap cap (`NODE_OPTIONS=--max-old-space-size=512`)
 - tmux scrollback reduced from 20,000 → 5,000 lines
-- Healthcheck `start-period` raised to 120s so Supervisor doesn't restart the addon while it's still booting
+- Healthcheck `start-period` raised to 120s so Supervisor doesn't restart the app while it's still booting
 
 If you still see kills:
 1. Increase the VM's RAM (2 GB+ recommended)

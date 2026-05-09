@@ -39,7 +39,7 @@ profile claudecode flags=(attach_disconnected,mediate_deleted) {
   /usr/local/** ixr,
   /usr/libexec/** ixr,
 
-  # Add-on data
+  # App data
   /data/** rwk,
 
   # Home Assistant config - main working directory

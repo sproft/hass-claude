@@ -29,8 +29,8 @@ configuration:
   auto_update_claude:
     name: Actualización Automática de Claude Code
     description: >-
-      Verifica e instala automáticamente actualizaciones de Claude Code al iniciar el add-on.
-      Mantiene Claude Code actualizado sin necesidad de actualizar la versión del add-on.
+      Verifica e instala automáticamente actualizaciones de Claude Code al iniciar la app.
+      Mantiene Claude Code actualizado sin necesidad de actualizar la versión de la app.
 
 network:
   7681/tcp: Terminal Web (ttyd)
