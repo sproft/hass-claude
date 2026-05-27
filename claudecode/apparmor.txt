@@ -68,4 +68,11 @@ profile claudecode flags=(attach_disconnected,mediate_deleted) {
 
   # Node.js modules
   /usr/lib/node_modules/** ixmr,
+
+  # npm global prefix (issue #13). The /data/** rwk rule above already
+  # grants read/write/lock; add execute and mmap so the installed `claude`
+  # binary and its Node modules can be run from this writable, persistent
+  # path. Self-updates (`npm install -g ...@latest`) land here instead of
+  # the AppArmor-denied /usr/local/lib/node_modules.
+  /data/npm-global/** ixmr,
 }

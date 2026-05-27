@@ -153,8 +153,11 @@ jobs:
           python3 .github/scripts/extract-boot-script.py > smoke/boot-real.sh
           sed -E 's|exec ttyd .*$|echo "[smoke] boot reached ttyd launch (stubbed)"|' \
             smoke/boot-real.sh > smoke/boot-smoke.sh
+          # /data is mounted rw to match Supervisor behaviour: the boot
+          # script seeds /data/npm-global from /opt/npm-global on first
+          # boot (issue #13) and auto_update_claude writes there too.
           docker run --rm \
-            -v "$PWD/smoke/data:/data:ro" \
+            -v "$PWD/smoke/data:/data:rw" \
             -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
             --entrypoint /bin/bash \
             hass-claude-test:amd64 \
@@ -163,7 +166,10 @@ jobs:
           grep -q '\[INFO\] MCP configured with Home Assistant integration' smoke/boot.log
           grep -q '\[INFO\] Pre-authorized read-only MCP tools'             smoke/boot.log
           grep -q '\[INFO\] auto_update_claude disabled - skipping update'  smoke/boot.log
+          grep -q '\[INFO\] Seeding /data/npm-global from /opt/npm-global'  smoke/boot.log
           grep -q '\[smoke\] boot reached ttyd launch (stubbed)'            smoke/boot.log
+          # Seeded layout must actually contain the claude binary symlink.
+          test -x smoke/data/npm-global/bin/claude
 
       - name: Boot smoke covers the failure-tail path on a forced timeout
         run: |
@@ -185,8 +191,10 @@ jobs:
           python3 .github/scripts/extract-boot-script.py > smoke/boot-real.sh
           sed -E 's|exec ttyd .*$|wait; echo "[smoke] boot reached ttyd (stubbed); waited for background update"|' \
             smoke/boot-real.sh > smoke/boot-smoke-update.sh
+          # /data mounted rw: auto_update_claude now writes to
+          # /data/npm-global via NPM_CONFIG_PREFIX (issue #13).
           docker run --rm \
-            -v "$PWD/smoke/data-update:/data:ro" \
+            -v "$PWD/smoke/data-update:/data:rw" \
             -v "$PWD/smoke/boot-smoke-update.sh:/usr/local/bin/boot-smoke.sh:ro" \
             --entrypoint /bin/bash \
             hass-claude-test:amd64 \

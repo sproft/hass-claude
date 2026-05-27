@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.70] - 2026-05-26
+
+### Fixed
+- Claude Code self-update failing with `EACCES` on `/usr/local/lib/node_modules/...` (issue #13, reported by @nstrelow in HA Community thread post #23). The app runs as root so this was never a Unix ownership problem; the write was blocked by the AppArmor profile, which grants `r`+`ix` on `/usr/local/**` but not `w`. `npm install -g @anthropic-ai/claude-code@latest` (whether invoked by `auto_update_claude` at boot or manually from the app shell) tries to rename the existing package inside `/usr/local/lib/node_modules`, AppArmor denies the write, npm reports `errno -13` and exits 243, and the boot wrapper logs `Claude Code update failed/timed out (exit 243, ...)`. That "timed out" wording was misleading: this was a hard permission denial, distinct from the 300s timeout fixed in 1.2.67.
+
+### Changed
+- **Moved the npm global prefix to `/data/npm-global`.** The Dockerfile now installs the image-baked Claude Code into `/opt/npm-global` (via `NPM_CONFIG_PREFIX=/opt/npm-global npm install -g`), and the container sets `NPM_CONFIG_PREFIX=/data/npm-global` plus prepends `/data/npm-global/bin:/opt/npm-global/bin` to `PATH`. The AppArmor profile gains `/data/npm-global/** ixmr,` (the existing `/data/** rwk` rule already covers write/lock; the new rule adds execute and mmap on top via permission union). `/data` is writable and persisted across restarts by the HA Supervisor, so self-updates now land in a location that AppArmor permits and that survives container restarts. `/usr` stays read-only, in line with the 1.2.69 hardening: the app cannot rewrite its own system binaries.
+- **First-boot seeding.** The boot script tries `mkdir -p /data/npm-global` and, if `/data/npm-global/bin/claude` is missing, copies `/opt/npm-global/.` into `/data/npm-global/`. Subsequent boots are idempotent and skip the copy. If `/data/npm-global` cannot be created or written (read-only mount, disk full, etc.) the script logs a warning and falls through to the image-bundled `/opt/npm-global/bin/claude` so the app still launches; only `auto_update_claude` is disabled in that degraded mode. PATH ordering means a user-updated Claude Code wins over the image-bundled copy.
+
+### Notes for users on 1.2.69 or older
+- After updating to 1.2.70, the first boot will seed `/data/npm-global` from the image. From that point on, `auto_update_claude` and manual `npm install -g @anthropic-ai/claude-code@latest` from the app terminal will both succeed without disabling Protection mode.
+- If you previously turned Protection mode off as a workaround and ran a manual `npm install -g` (which wrote into `/usr/local/lib/node_modules`), that copy is in the container's writable layer and will be lost on the next rebuild. After updating to 1.2.70 the persistent `/data/npm-global` copy is authoritative.
+- To force a fresh re-seed from the bundled image version (e.g. after a broken self-update), shell into the app and run `rm -rf /data/npm-global` then restart the app.
+
 ## [1.2.69] - 2026-05-09
 
 ### Security

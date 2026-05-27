@@ -53,8 +53,11 @@ RUN case "${BUILD_ARCH}" in \
     echo "${TTYD_SHA256}  /usr/bin/ttyd" | sha256sum -c - && \
     chmod +x /usr/bin/ttyd
 
-# Install Claude Code via npm
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code via npm into /opt/npm-global (image-baked staging path).
+# At runtime the boot script seeds /data/npm-global from this path on first
+# boot, and `npm install -g ...@latest` writes to /data/npm-global, which is
+# writable under the AppArmor profile and persists across restarts (issue #13).
+RUN NPM_CONFIG_PREFIX=/opt/npm-global npm install -g @anthropic-ai/claude-code
 
 # Install hass-mcp for Home Assistant integration
 RUN pip3 install --no-cache-dir --break-system-packages hass-mcp
@@ -136,8 +139,13 @@ EOF
 # Ensure .bashrc is sourced for login shells too
 RUN echo 'source ~/.bashrc' > /root/.profile
 
-# Set up PATH
-ENV PATH="/root/.local/bin:${PATH}"
+# Set up PATH and runtime npm prefix.
+# NPM_CONFIG_PREFIX moves `npm install -g` writes off the read-only /usr/local
+# tree (which the AppArmor profile denies) to /data/npm-global (rwk, persistent).
+# /data/npm-global/bin comes first in PATH so a user-updated `claude` wins over
+# the image-bundled copy at /opt/npm-global/bin. See issue #13.
+ENV NPM_CONFIG_PREFIX=/data/npm-global \
+    PATH="/data/npm-global/bin:/opt/npm-global/bin:/root/.local/bin:${PATH}"
 
 # Set working directory
 WORKDIR /homeassistant
@@ -215,6 +223,15 @@ CMD ["/bin/bash", "-c", "\
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
   if [ ! -L /root/.config/claude-code ]; then rm -rf /root/.config/claude-code; ln -s $PERSIST_DIR/config /root/.config/claude-code; fi && \
   if [ ! -L /root/.claude.json ]; then touch $PERSIST_DIR/.claude.json; rm -f /root/.claude.json; ln -s $PERSIST_DIR/.claude.json /root/.claude.json; fi && \
+  if mkdir -p /data/npm-global 2>/dev/null; then \
+    if [ ! -x /data/npm-global/bin/claude ]; then \
+      echo '[INFO] Seeding /data/npm-global from /opt/npm-global (first boot or fresh install)'; \
+      cp -a /opt/npm-global/. /data/npm-global/ || \
+        echo '[WARN] Failed to seed /data/npm-global; falling back to image-bundled /opt/npm-global'; \
+    fi; \
+  else \
+    echo '[WARN] /data/npm-global is not writable; falling back to image-bundled /opt/npm-global (auto_update will fail)'; \
+  fi && \
   FONT_SIZE=$(jq -r '.terminal_font_size // 14' /data/options.json) && \
   case $FONT_SIZE in *[!0-9]*|'') FONT_SIZE=14;; esac && \
   THEME=$(jq -r '.terminal_theme // \"dark\"' /data/options.json) && \
