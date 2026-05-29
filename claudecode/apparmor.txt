@@ -75,4 +75,15 @@ profile claudecode flags=(attach_disconnected,mediate_deleted) {
   # path. Self-updates (`npm install -g ...@latest`) land here instead of
   # the AppArmor-denied /usr/local/lib/node_modules.
   /data/npm-global/** ixmr,
+
+  # Image-baked npm prefix (issues #15, #16). The Dockerfile installs the
+  # bundled `claude` here at build time; the boot script seeds /data/npm-global
+  # from it on first boot, and it stays on PATH as a fallback. Without read it
+  # cannot be copied to /data (cp fails with "Permission denied" and seeding is
+  # skipped); without execute the fallback /opt/npm-global/bin/claude is killed
+  # with "Permission denied" even though it resolves on PATH.
+  # The directory node itself needs read so `cp -a /opt/npm-global/.` can list
+  # it; unlike /data there is no broader /opt umbrella rule to cover it.
+  /opt/npm-global/ r,
+  /opt/npm-global/** ixmr,
 }

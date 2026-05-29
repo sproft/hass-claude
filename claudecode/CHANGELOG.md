@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.72] - 2026-05-29
+
+### Fixed
+- **`claude` killed with `Permission denied` on a fresh install with Protection mode on** (issues #15, #16). 1.2.71 put `/opt/npm-global/bin` back on `PATH`, so `which claude` resolved again, but the AppArmor profile (`apparmor.txt`) had no rule for `/opt`. With Protection mode enabled, that meant two things: first-boot seeding (`cp -a /opt/npm-global/. /data/npm-global/`) was denied because the source `/opt` was unreadable, so `/data/npm-global` was never populated; and the remaining `/opt/npm-global/bin/claude` could not be executed, so launching it failed with `bash: /opt/npm-global/bin/claude: Permission denied` even though it was on `PATH`. Added `/opt/npm-global/** ixmr` to the profile so the image-baked copy can be read (for seeding into `/data`) and executed (as a fallback). The `/data/npm-global` location was already allowed, so installs that seeded successfully or ran a manual `npm install -g` were unaffected.
+
+### Notes
+- This class of bug is invisible to CI: the boot smoke test runs the image with `docker run`, which does not apply Home Assistant's AppArmor profile, so a profile gap cannot be reproduced there. Verify AppArmor changes on a real install with Protection mode on.
+
 ## [1.2.71] - 2026-05-28
 
 ### Fixed
