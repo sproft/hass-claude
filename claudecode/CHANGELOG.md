@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.74] - 2026-06-19
+
+### Fixed
+- **`command not found: claude` on a fresh install with Protection mode on** (issue #22). The first-boot seed `cp -a /opt/npm-global/. /data/npm-global/` preserves hard links, and recent Claude Code npm packages ship `bin/claude.exe` as a hard link to the platform binary (`@anthropic-ai/claude-code-linux-x64-musl/claude`). Recreating that link calls `link(2)`, but the AppArmor profile granted `/data/** rwk` and `/data/npm-global/** ixmr`, which union to read/write/lock/exec/mmap with no `l` (link) permission. Under Protection mode the kernel denied `link(2)` (EACCES, which `cp` prints as "Permission denied"), the seed aborted partway, and `claude` never landed on PATH. This is the same Protection-mode-on profile-gap class as #13/#15/#16; it surfaced now because the npm package restructured to ship the native binary as a hard-linked optional dependency. Added `l` to the `/data/npm-global/**` rule. The same permission is required by the `npm install -g ...@latest` auto-update path, which lays out the identical hard link and was being denied too.
+
+### Changed
+- **The first-boot seed is now self-healing.** Previously a failed seed left a partial `/data/npm-global` whose top-level `bin/claude` launcher both shadowed the working `/opt/npm-global/bin/claude` on PATH and tripped the old `[ ! -x .../bin/claude ]` guard, so seeding never retried and the install stayed broken. The seed is now gated on a `.seed-complete` marker: a healthy existing tree is adopted as-is (preserving a user's auto-updated copy), otherwise any partial or broken tree is cleared and re-seeded, and on failure the partial copy is removed so the `/opt` fallback still resolves. Installs already broken by #22 recover automatically on the next boot after updating, with no manual `rm -rf /data/npm-global` needed.
+
+### CI
+- The boot smoke test now asserts the seed completion marker is written, and a new step simulates a broken partial `/data/npm-global` (an executable but non-working `bin/claude`, no marker) and verifies the boot repairs it and `claude` runs. The AppArmor `l` change itself cannot be exercised in CI, because the smoke test runs under `docker run`, which does not load the Home Assistant AppArmor profile, so it must be verified on a real install with Protection mode on.
+
 ## [1.2.73] - 2026-06-19
 
 ### Fixed

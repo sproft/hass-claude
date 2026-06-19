@@ -230,14 +230,25 @@ CMD ["/bin/bash", "-c", "\
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
   if [ ! -L /root/.config/claude-code ]; then rm -rf /root/.config/claude-code; ln -s $PERSIST_DIR/config /root/.config/claude-code; fi && \
   if [ ! -L /root/.claude.json ]; then touch $PERSIST_DIR/.claude.json; rm -f /root/.claude.json; ln -s $PERSIST_DIR/.claude.json /root/.claude.json; fi && \
-  if mkdir -p /data/npm-global 2>/dev/null; then \
-    if [ ! -x /data/npm-global/bin/claude ]; then \
-      echo '[INFO] Seeding /data/npm-global from /opt/npm-global (first boot or fresh install)'; \
-      cp -a /opt/npm-global/. /data/npm-global/ || \
-        echo '[WARN] Failed to seed /data/npm-global; falling back to image-bundled /opt/npm-global'; \
+  if mkdir -p /data 2>/dev/null && [ -w /data ]; then \
+    if [ ! -f /data/npm-global/.seed-complete ]; then \
+      if [ -x /data/npm-global/bin/claude ] && /data/npm-global/bin/claude --version >/dev/null 2>&1; then \
+        touch /data/npm-global/.seed-complete; \
+        echo '[INFO] Existing /data/npm-global is healthy; marked seed complete'; \
+      else \
+        echo '[INFO] Seeding /data/npm-global from /opt/npm-global (first boot, fresh install, or repairing a partial seed)'; \
+        rm -rf /data/npm-global; \
+        if cp -a /opt/npm-global /data/npm-global && [ -x /data/npm-global/bin/claude ]; then \
+          touch /data/npm-global/.seed-complete; \
+          echo '[INFO] Seeded /data/npm-global'; \
+        else \
+          echo '[WARN] Failed to seed /data/npm-global; removing partial copy and falling back to image-bundled /opt/npm-global (auto_update may fail)'; \
+          rm -rf /data/npm-global; \
+        fi; \
+      fi; \
     fi; \
   else \
-    echo '[WARN] /data/npm-global is not writable; falling back to image-bundled /opt/npm-global (auto_update will fail)'; \
+    echo '[WARN] /data is not writable; falling back to image-bundled /opt/npm-global (auto_update will fail)'; \
   fi && \
   FONT_SIZE=$(jq -r '.terminal_font_size // 14' /data/options.json) && \
   case $FONT_SIZE in *[!0-9]*|'') FONT_SIZE=14;; esac && \

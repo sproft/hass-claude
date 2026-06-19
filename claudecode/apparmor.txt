@@ -69,12 +69,16 @@ profile claudecode flags=(attach_disconnected,mediate_deleted) {
   # Node.js modules
   /usr/lib/node_modules/** ixmr,
 
-  # npm global prefix (issue #13). The /data/** rwk rule above already
+  # npm global prefix (issues #13, #22). The /data/** rwk rule above already
   # grants read/write/lock; add execute and mmap so the installed `claude`
   # binary and its Node modules can be run from this writable, persistent
-  # path. Self-updates (`npm install -g ...@latest`) land here instead of
-  # the AppArmor-denied /usr/local/lib/node_modules.
-  /data/npm-global/** ixmr,
+  # path, and link (`l`) so the first-boot seed and `npm install -g ...@latest`
+  # can recreate the package's internal hard link. Recent Claude Code packages
+  # ship bin/claude.exe as a hard link to the platform binary
+  # (@anthropic-ai/claude-code-linux-x64-musl/claude); without `l`, link(2) is
+  # denied under Protection mode, the seed aborts, and `claude` never lands on
+  # PATH. Self-updates land here instead of the denied /usr/local/lib/node_modules.
+  /data/npm-global/** ixmrl,
 
   # Image-baked npm prefix (issues #15, #16). The Dockerfile installs the
   # bundled `claude` here at build time; the boot script seeds /data/npm-global
