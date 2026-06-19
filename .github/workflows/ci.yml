@@ -136,7 +136,7 @@ jobs:
       - name: Boot smoke runs the real script with ttyd stubbed out
         run: |
           set -euo pipefail
-          mkdir -p smoke/data
+          mkdir -p smoke/data smoke/homeassistant
           cat > smoke/data/options.json <<'EOF'
           {
             "enable_mcp": true,
@@ -156,8 +156,12 @@ jobs:
           # /data is mounted rw to match Supervisor behaviour: the boot
           # script seeds /data/npm-global from /opt/npm-global on first
           # boot (issue #13) and auto_update_claude writes there too.
+          # /homeassistant is mounted rw to emulate the persistent HA config
+          # volume so the .claude.json symlink target is observable from the
+          # host after the run (regression guard for #20).
           docker run --rm \
             -v "$PWD/smoke/data:/data:rw" \
+            -v "$PWD/smoke/homeassistant:/homeassistant:rw" \
             -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
             --entrypoint /bin/bash \
             hass-claude-test:amd64 \
@@ -170,6 +174,17 @@ jobs:
           grep -q '\[smoke\] boot reached ttyd launch (stubbed)'            smoke/boot.log
           # Seeded layout must actually contain the claude binary symlink.
           test -x smoke/data/npm-global/bin/claude
+          # Regression guard for #20: the MCP-registration step must land the
+          # config on the PERSISTENT volume, written through the
+          # /root/.claude.json symlink to its target. The old code did
+          # `mv /tmp/claude.tmp "$CLAUDE_JSON"`, which rename(2)-replaced the
+          # symlink with a plain file in the ephemeral layer, so the persistent
+          # target stayed an empty `{}` and login state never survived a
+          # restart. If that regresses, the file below has no mcpServers and the
+          # jq assertion fails.
+          test -f smoke/homeassistant/.claudecode/.claude.json
+          jq -e '.mcpServers.homeassistant.command == "hass-mcp"' \
+            smoke/homeassistant/.claudecode/.claude.json >/dev/null
           # Regression guard for #15/#16: the web terminal opens a login shell,
           # and /etc/profile on the Alpine base resets PATH. `claude` must still
           # resolve on PATH in a real login shell, not just exist on disk.

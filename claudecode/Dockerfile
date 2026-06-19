@@ -252,11 +252,12 @@ CMD ["/bin/bash", "-c", "\
   { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
   { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
-    if jq '.mcpServers.homeassistant = {\"type\":\"stdio\",\"command\":\"hass-mcp\"} | del(.mcpServers.playwright)' \"$CLAUDE_JSON\" > /tmp/claude.tmp; then \
-      mv /tmp/claude.tmp \"$CLAUDE_JSON\"; \
+    if jq '.mcpServers.homeassistant = {\"type\":\"stdio\",\"command\":\"hass-mcp\"} | del(.mcpServers.playwright)' \"$CLAUDE_JSON\" > /tmp/claude.tmp && jq -e . /tmp/claude.tmp >/dev/null 2>&1; then \
+      cp /tmp/claude.tmp \"$PERSIST_DIR/.claude.json.tmp\" && mv \"$PERSIST_DIR/.claude.json.tmp\" \"$PERSIST_DIR/.claude.json\"; \
     else \
       echo '[WARN] Failed to register MCP server in .claude.json'; \
     fi; \
+    rm -f /tmp/claude.tmp; \
     ALLOWED_TOOLS='[\"mcp__homeassistant__get_version\",\"mcp__homeassistant__get_entity\",\"mcp__homeassistant__list_entities\",\"mcp__homeassistant__search_entities_tool\",\"mcp__homeassistant__domain_summary_tool\",\"mcp__homeassistant__list_automations\",\"mcp__homeassistant__get_history\",\"mcp__homeassistant__get_error_log\",\"Read(/homeassistant/**)\",\"Read(/config/**)\",\"Read(/share/**)\",\"Read(/media/**)\",\"Glob(/homeassistant/**)\",\"Glob(/config/**)\",\"Grep(/homeassistant/**)\",\"Grep(/config/**)\"]' && \
     if jq --argjson tools \"$ALLOWED_TOOLS\" '.permissions.allow = ($tools + (.permissions.allow // []) | unique)' \"$SETTINGS_FILE\" > /tmp/settings.tmp; then \
       mv /tmp/settings.tmp \"$SETTINGS_FILE\" && \

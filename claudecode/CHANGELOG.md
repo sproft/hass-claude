@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.73] - 2026-06-19
+
+### Fixed
+- **Claude forgets credentials/login after a restart or app configuration change** (issue #20, reported by @kventil). On boot the entrypoint symlinks `/root/.claude.json` to `/homeassistant/.claudecode/.claude.json` so the account record and onboarding state land on the persistent config volume. The MCP-registration step then rewrote that file with `jq ... > /tmp/claude.tmp && mv /tmp/claude.tmp "$CLAUDE_JSON"`. `mv` calls `rename(2)`, which replaces the symlink itself instead of following it, so after the first boot `/root/.claude.json` became a plain file in the container's ephemeral layer. From then on everything Claude wrote to `.claude.json` (the account record, onboarding state) lived only inside the container: a Home Assistant restart re-seeded the file to a bare MCP stub, and an app configuration change recreated the container and wiped it, so Claude came back logged out. The OAuth token in `.credentials.json` was unaffected because it lives inside the already-symlinked `.claude` directory. The fix writes the regenerated JSON to a temp file on the persistent volume and `mv`s it onto the symlink target (`/homeassistant/.claudecode/.claude.json`) instead of onto the link at `/root/.claude.json`. That preserves the symlink and keeps the atomic `rename(2)` of the old code, so the live `.claude.json` is never left half-written if the container is killed mid-boot. (A plain `cat > "$CLAUDE_JSON"` would have fixed the symlink but truncated the file in place, trading the clobber for a crash-time data-loss window.) The temp output is also validated with `jq -e .` before it is promoted, so a truncated or malformed regeneration can never overwrite a good file.
+
+### CI
+- The boot smoke test now bind-mounts a host directory at `/homeassistant` and asserts that, after the real boot script runs, the MCP registration is present in the persistent `/homeassistant/.claudecode/.claude.json`. The previous smoke test only mounted `/data` and grepped log lines, so the symlink target lived in the unobserved ephemeral layer and a revert to the symlink-clobbering `mv` would have passed CI green.
+
+### Notes
+- Users upgrading from an affected build (1.2.72 or earlier) may have to log in one more time. On the buggy versions the live `.claude.json` was a plain file in the container's ephemeral layer, which Home Assistant discards when it recreates the container for the update, so any account state that never reached the persistent volume cannot be recovered. From the first 1.2.73 boot onward the session persists across restarts and configuration changes.
+
 ## [1.2.72] - 2026-05-29
 
 ### Fixed
