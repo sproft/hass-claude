@@ -254,6 +254,7 @@ CMD ["/bin/bash", "-c", "\
   case $FONT_SIZE in *[!0-9]*|'') FONT_SIZE=14;; esac && \
   THEME=$(jq -r '.terminal_theme // \"dark\"' /data/options.json) && \
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
+  AUTO_CONTINUE=$(jq -r '.auto_continue // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r '.enable_mcp // true' /data/options.json) && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
@@ -300,9 +301,13 @@ CMD ["/bin/bash", "-c", "\
     COLORS='background=#eff1f5,foreground=#4c4f69,cursor=#dc8a78'; \
   fi && \
   if [ \"$SESSION_PERSIST\" = \"true\" ]; then \
-    SHELL_CMD='tmux new-session -A -s claude'; \
+    if [ \"$AUTO_CONTINUE\" = \"true\" ]; then \
+      SHELL_CMD=(tmux new-session -A -s claude 'bash -ic cc'); \
+    else \
+      SHELL_CMD=(tmux new-session -A -s claude); \
+    fi; \
   else \
-    SHELL_CMD='bash --login'; \
+    SHELL_CMD=(bash --login); \
   fi && \
   cd /homeassistant && \
   exec ttyd --port 7681 --writable --ping-interval 30 --max-clients 5 \
@@ -310,5 +315,5 @@ CMD ["/bin/bash", "-c", "\
     -t fontFamily=Monaco,Consolas,monospace \
     -t scrollback=20000 \
     -t \"theme=$COLORS\" \
-    $SHELL_CMD \
+    \"${SHELL_CMD[@]}\" \
 "]

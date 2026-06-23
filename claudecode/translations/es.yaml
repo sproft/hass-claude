@@ -26,6 +26,13 @@ configuration:
       Habilita persistencia de sesión via tmux. Cuando está habilitado, tu sesión
       del terminal sobrevive a actualizaciones del navegador y desconexiones.
       Recomendado para tareas de larga duración.
+  auto_continue:
+    name: Continuar Claude Automáticamente al Iniciar
+    description: >-
+      Cuando el terminal inicia, ejecuta automáticamente 'claude --continue' para
+      reanudar tu sesión anterior en lugar de abrir una shell. Solo tiene efecto
+      cuando la Persistencia de Sesión está habilitada. Es seguro sin sesión previa
+      (inicia una nueva).
   auto_update_claude:
     name: Actualización Automática de Claude Code
     description: >-

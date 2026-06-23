@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.75] - 2026-06-23
+
+### Added
+- **`auto_continue` option (default `false`, issue #24, requested by @nickfurnell).** When `session_persistence: true`, the web terminal launches `tmux new-session -A -s claude`, which drops into a bare login shell; after a Home Assistant restart the tmux session is gone, so resuming a conversation means manually typing `c`/`cc`. With `auto_continue: true` the tmux session's startup command becomes `bash -ic cc`, which sources `.bashrc` (so the `update_mcp_token` function and the `cc` alias are defined) and then runs `claude --continue`. `claude --continue` starts a fresh session when there is no prior one, so it is safe to invoke unconditionally. Reusing the existing `cc` alias keeps the MCP-token refresh in one place. The option only takes effect with `session_persistence: true`; without tmux the terminal opens `bash --login` and `auto_continue` is ignored (noted in the option description).
+
+### Changed
+- **The boot script now builds the terminal launch command as a bash array (`SHELL_CMD=(...)`) and invokes it as `"${SHELL_CMD[@]}"`** instead of a plain string expanded unquoted. The previous `exec ttyd ... $SHELL_CMD` relied on every token being a single bare word. The `auto_continue` path needs `bash -ic cc` to reach `tmux` as one argument; an unquoted string expansion would word-split it into `bash`, `-ic`, `cc` and hand `tmux` a broken command. The array preserves the sub-command as a single element and is quoted at the launch site, so the grouping survives. The non-persistence (`bash --login`) and plain-persistence (`tmux new-session -A -s claude`) paths are unchanged in behaviour.
+
+### Notes
+- With `tmux new-session -A`, reconnecting to an already-running `claude` session reattaches and the startup command is ignored, so a browser refresh while the app is up does not spawn a second Claude. The startup command only runs when the session is first created (container start or after a Home Assistant restart), which is exactly when auto-resume is wanted.
+- Because the tmux window's command is `bash -ic cc`, exiting Claude (Ctrl-D or `/exit`) ends that command and closes the window; with a single window the tmux session then ends, the same as exiting the launched shell. Leave `auto_continue: false` (the default) if you prefer to land in a shell and start Claude yourself.
+
+### CI
+- The boot smoke test gains a step that drives the real boot script with `session_persistence: true` and both `auto_continue` values, stubs the `exec ttyd` launch with a `printf` over `"${SHELL_CMD[@]}"`, and asserts the constructed argv: with `auto_continue: true` the launch is `tmux new-session -A -s claude` followed by a single `bash -ic cc` argument (guarding against the word-split regression), and with `auto_continue: false` no `bash -ic cc` argument is present. The actual tmux launch and `claude --continue` resume cannot be exercised under `docker run` (no real HA restart, no interactive attach), so resume behaviour still needs a manual check on a real install across a restart.
+
 ## [1.2.74] - 2026-06-19
 
 ### Fixed

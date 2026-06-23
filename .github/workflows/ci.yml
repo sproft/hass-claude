@@ -237,6 +237,76 @@ jobs:
             hass-claude-test:amd64 \
             -lc 'claude --version' >/dev/null
 
+      - name: Boot builds the right launch command for auto_continue (issue #24)
+        run: |
+          set -euo pipefail
+          # Pull the real boot script and stub the `exec ttyd ...` launch with a
+          # printf that emits each element of the SHELL_CMD array on its own line,
+          # so we can assert the constructed argv. The whole risk of the
+          # auto_continue change is quoting: `bash -ic cc` must reach tmux as ONE
+          # argument, not word-split into `bash`, `-ic`, `cc`.
+          python3 .github/scripts/extract-boot-script.py > smoke/boot-real.sh
+          sed -E 's|exec ttyd .*$|printf "ARG:%s\\n" "${SHELL_CMD[@]}"|' \
+            smoke/boot-real.sh > smoke/boot-shellcmd.sh
+
+          # session_persistence + auto_continue ON: tmux launches `bash -ic cc`
+          # as a single argument.
+          mkdir -p smoke/data-autocontinue
+          cat > smoke/data-autocontinue/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": true,
+            "auto_continue": true,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300
+          }
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-autocontinue:/data:rw" \
+            -v "$PWD/smoke/boot-shellcmd.sh:/usr/local/bin/boot-shellcmd.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-shellcmd.sh 2>&1 | tee smoke/boot-autocontinue.log
+          grep -qx 'ARG:tmux'        smoke/boot-autocontinue.log
+          grep -qx 'ARG:new-session' smoke/boot-autocontinue.log
+          grep -qx 'ARG:claude'      smoke/boot-autocontinue.log
+          grep -qx 'ARG:bash -ic cc' smoke/boot-autocontinue.log
+          # The sub-command must NOT have word-split into separate args.
+          if grep -qx 'ARG:bash' smoke/boot-autocontinue.log; then
+            echo "::error::auto_continue launch word-split: 'bash -ic cc' did not survive as one argument"
+            exit 1
+          fi
+
+          # session_persistence ON, auto_continue OFF: plain tmux session, no cc.
+          mkdir -p smoke/data-noautocontinue
+          cat > smoke/data-noautocontinue/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": true,
+            "auto_continue": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300
+          }
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-noautocontinue:/data:rw" \
+            -v "$PWD/smoke/boot-shellcmd.sh:/usr/local/bin/boot-shellcmd.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-shellcmd.sh 2>&1 | tee smoke/boot-noautocontinue.log
+          grep -qx 'ARG:tmux'   smoke/boot-noautocontinue.log
+          grep -qx 'ARG:claude' smoke/boot-noautocontinue.log
+          if grep -q 'ARG:bash -ic cc' smoke/boot-noautocontinue.log; then
+            echo "::error::auto_continue is off but the cc launch command is present"
+            exit 1
+          fi
+
       - name: Boot smoke covers the failure-tail path on a forced timeout
         run: |
           set -euo pipefail

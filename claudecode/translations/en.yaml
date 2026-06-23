@@ -25,6 +25,12 @@ configuration:
     description: >-
       Enable tmux session persistence. When enabled, your terminal session
       survives browser refreshes and disconnects. Recommended for long-running tasks.
+  auto_continue:
+    name: Auto-continue Claude on Start
+    description: >-
+      When the terminal starts, automatically run 'claude --continue' to resume
+      your previous session instead of dropping into a shell. Only takes effect
+      when Session Persistence is enabled. Safe with no prior session (starts fresh).
   auto_update_claude:
     name: Auto-update Claude Code
     description: >-

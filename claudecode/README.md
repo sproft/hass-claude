@@ -99,9 +99,19 @@ claude --continue
 | `terminal_theme` | dark or light | dark |
 | `working_directory` | Start directory | /homeassistant |
 | `session_persistence` | Use tmux for persistent sessions | false |
+| `auto_continue` | Run `claude --continue` automatically on terminal start (requires `session_persistence`) | false |
 | `auto_update_claude` | Auto-update Claude Code on startup (runs in background, with timeout) | false |
 
-> **Note:** `session_persistence` and `auto_update_claude` both default to `false` to keep startup fast and prevent OOM kills on small VMs (e.g. Proxmox HAOS with limited RAM). Turn them on if you want long-running sessions across reconnects or always-latest Claude Code.
+> **Note:** `session_persistence`, `auto_continue`, and `auto_update_claude` all default to `false` to keep startup fast and prevent OOM kills on small VMs (e.g. Proxmox HAOS with limited RAM). Turn them on if you want long-running sessions across reconnects, automatic resume after a restart, or always-latest Claude Code.
+
+### Auto-resume after a restart (`auto_continue`)
+
+By default, when `session_persistence` is on the terminal opens a bare shell and you type `c` or `cc` to start Claude. Set `auto_continue: true` to have the terminal run `claude --continue` automatically as soon as the session is created, so the app comes back to a live Claude session after a Home Assistant restart with no manual step.
+
+- It only applies when `session_persistence: true`. Without tmux the terminal opens a plain login shell and `auto_continue` is ignored.
+- `claude --continue` starts a fresh session if there is no previous one, so enabling it is safe even on a first launch.
+- Reconnecting to an already-running session (for example a browser refresh while the app is up) reattaches to the existing Claude rather than starting a second one.
+- Because the window runs Claude directly, exiting Claude (Ctrl-D or `/exit`) closes the window. Leave `auto_continue: false` if you would rather land in a shell.
 
 ## File Locations
 
