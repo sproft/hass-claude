@@ -1,2 +1,5 @@
 * text=auto
 *.sh text eol=lf
+# Dotfiles COPYed into the Linux container must stay LF; a stray CR breaks
+# bash sourcing and tmux config parsing (issue #26).
+claudecode/rootfs/** text eol=lf

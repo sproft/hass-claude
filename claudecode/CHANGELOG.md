@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.76] - 2026-06-26
+
+### Fixed
+- **App build fails with `dockerfile parse error ... unknown instruction: set` on some installs** (issue #26, reported by @davec25 on HA Yellow / aarch64). The Dockerfile wrote `/root/.tmux.conf` and `/root/.bashrc` with shell heredocs (`RUN cat > file << 'EOF' ... EOF`). Heredoc blocks inside a Dockerfile are a BuildKit feature that only activates when the Dockerfile declares a modern frontend via a `# syntax=docker/dockerfile:1.4` (or newer) directive on the first line. This Dockerfile has no such directive, so builders fall back to the Dockerfile parser bundled in the Docker engine, and on older engines that parser does not understand heredocs: it treats the first content line (`set -g history-limit 5000`) as a build instruction and aborts. Because `config.yaml` ships no prebuilt `image:`, every install builds locally from this Dockerfile, so an affected engine cannot install any version at all. It went unreported for many releases because most installs run a newer Docker whose bundled parser handles heredocs. The two dotfiles are now shipped as static files under `claudecode/rootfs/root/` and pulled in with `COPY`, which every Docker version parses regardless of BuildKit. The file contents are byte-for-byte identical to what the heredocs produced (both used a quoted `'EOF'`, so nothing was expanded at build time), so there is no behaviour change. A `.gitattributes` rule pins `claudecode/rootfs/**` to LF so a stray CR from a checkout on Windows cannot break bash sourcing or tmux parsing inside the container.
+
+### Notes
+- This is a build-time fix only. Installs already running an affected Docker engine will be able to build and install starting from this release; no change is needed on installs that were already building successfully.
+
 ## [1.2.75] - 2026-06-23
 
 ### Added
