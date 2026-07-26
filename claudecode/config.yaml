@@ -1,6 +1,6 @@
 name: Claude Code
 description: Run Claude Code AI assistant inside Home Assistant to create automations, debug issues, and manage your smart home configuration
-version: "1.2.83"
+version: "1.2.84"
 slug: claudecode
 url: https://github.com/sproft/hass-claude
 arch:
@@ -46,6 +46,7 @@ options:
   confirm_actions:
     - homeassistant.restart
     - hassio.supervisor_restart
+  unattended_mode: false
 schema:
   enable_mcp: bool
   terminal_font_size: int(10,24)
@@ -60,6 +61,7 @@ schema:
     - str
   confirm_actions:
     - str
+  unattended_mode: bool
 environment:
   TERM: xterm-256color
   NODE_OPTIONS: "--max-old-space-size=512"

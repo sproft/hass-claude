@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.84] - 2026-07-26
+
+### Added
+- **`unattended_mode` option** (issue #39). Current Claude Code CLI versions refuse `--dangerously-skip-permissions`, and the equivalent `permissions.defaultMode: bypassPermissions`, whenever they detect UID 0 — and this app always runs as root, so any install that set `bypassPermissions` by hand for unattended operation (typically to pair it with the privileged-action guard from #29/#30) started hard-failing on launch once the bundled CLI updated past the version that added that check, with `--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons`. `IS_SANDBOX=1` is the CLI's own documented opt-out for containerized-root use (`anthropics/claude-code#9184`), but it can't be a plain Dockerfile `ENV`: that's baked at build time, while the setting needs to depend on an app option read from `/data/options.json` at boot. Turning `unattended_mode` on now exports `IS_SANDBOX=1` in the boot script before `ttyd` launches, and sets `permissions.defaultMode` to `bypassPermissions` in the persistent `settings.json`, together, as one deliberate choice. The privileged-action guard is not weakened by this either way: it is a separate `PreToolUse` hook mechanism, so deny-tier actions still block and confirm-tier actions still require your approval regardless of this setting.
+- Turning `unattended_mode` back off actively removes a `permissions.defaultMode: bypassPermissions` it finds in `settings.json` on the next boot, rather than leaving it in place. This app's settings file is persistent and shipped changes only ever merge in additively (the same trap the Glob/Grep prune in 1.2.79 and the stray `mcpServers` prune in 1.2.82 both existed for), so simply changing what a future boot *writes* would not undo what an earlier boot already wrote. One consequence worth calling out: this prune also fires on an install that set `permissions.defaultMode: bypassPermissions` by hand before this option existed (the exact scenario reported in #39) — turn `unattended_mode: true` to keep that setting under the new, supported option instead of losing it to the prune.
+
 ## [1.2.83] - 2026-07-24
 
 ### Changed

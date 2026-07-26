@@ -62,6 +62,17 @@ configuration:
       Actions that require explicit human confirmation before running, as
       domain.service identifiers. homeassistant.restart is included by default so
       a full restart is never triggered without approval.
+  unattended_mode:
+    name: Unattended Mode
+    description: >-
+      Run Claude Code with no per-tool permission prompts, for fully headless
+      operation. Sets permissions.defaultMode to bypassPermissions and the
+      IS_SANDBOX flag Claude Code requires before it will do that while running
+      as root in this container. The privileged-action guard above is not
+      affected either way: deny-tier actions stay blocked and confirm-tier
+      actions still require your approval regardless of this setting. Off by
+      default. Turning it back off removes the bypass setting on the next
+      start; leave Enforce Privileged-action Guard on while this is enabled.
 
 network:
   7681/tcp: Web Terminal (ttyd)

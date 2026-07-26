@@ -392,6 +392,81 @@ jobs:
             exit 1
           fi
 
+      - name: Boot honors unattended_mode (issue #39)
+        run: |
+          set -euo pipefail
+          # Reuses smoke/boot-smoke.sh from the first boot-smoke step above
+          # (ttyd stubbed with an echo marker), same as the Glob/Grep repair
+          # step below it.
+
+          # unattended_mode: true on a fresh settings.json must export
+          # IS_SANDBOX and write permissions.defaultMode: bypassPermissions.
+          mkdir -p smoke/data-unattended smoke/ha-unattended
+          cat > smoke/data-unattended/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300,
+            "unattended_mode": true
+          }
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-unattended:/data:rw" \
+            -v "$PWD/smoke/ha-unattended:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-unattended-on.log
+          grep -q '\[INFO\] Unattended mode: IS_SANDBOX=1 exported for this session' smoke/boot-unattended-on.log
+          grep -q '\[INFO\] Unattended mode: permissions.defaultMode set to bypassPermissions' smoke/boot-unattended-on.log
+          jq -e '.permissions.defaultMode == "bypassPermissions"' \
+            smoke/ha-unattended/.claudecode/settings.json >/dev/null \
+            || { echo "::error::unattended_mode:true did not set permissions.defaultMode"; exit 1; }
+
+          # unattended_mode: false (or absent) must PRUNE a
+          # permissions.defaultMode: bypassPermissions left by an earlier boot
+          # (or hand-edited, the exact #39 report) rather than leaving it in
+          # place -- the same "shipped settings only ever merge in additively"
+          # trap as the Glob/Grep prune (#33) and the stray mcpServers prune
+          # (#20/#22 era). A stale key here is exactly what makes the CLI
+          # refuse to launch as root once IS_SANDBOX is no longer set.
+          mkdir -p smoke/data-unattended-off smoke/ha-unattended-off/.claudecode
+          cat > smoke/data-unattended-off/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300,
+            "unattended_mode": false
+          }
+          EOF
+          cat > smoke/ha-unattended-off/.claudecode/settings.json <<'EOF'
+          {"permissions":{"defaultMode":"bypassPermissions","allow":["Read(/homeassistant/**)"]}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-unattended-off:/data:rw" \
+            -v "$PWD/smoke/ha-unattended-off:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-smoke.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-unattended-off.log
+          grep -q '\[INFO\] Unattended mode off: removed a stale permissions.defaultMode: bypassPermissions' \
+            smoke/boot-unattended-off.log
+          jq -e '(.permissions | has("defaultMode")) | not' \
+            smoke/ha-unattended-off/.claudecode/settings.json >/dev/null \
+            || { echo "::error::stale permissions.defaultMode was not pruned when unattended_mode is off"; exit 1; }
+          # The prune must not touch unrelated permission rules.
+          jq -e '(.permissions.allow // []) | index("Read(/homeassistant/**)") != null' \
+            smoke/ha-unattended-off/.claudecode/settings.json >/dev/null \
+            || { echo "::error::unattended_mode prune removed unrelated settings"; exit 1; }
+
       - name: Boot repairs an install already broken by Glob/Grep rules (issue #33)
         run: |
           set -euo pipefail

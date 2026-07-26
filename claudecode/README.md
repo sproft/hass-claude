@@ -193,12 +193,15 @@ Change these on the app's **Configuration** tab.
 | `guard_privileged_actions` | `true` | Enforce the safety guard described above |
 | `disallow_actions` | six entries | Actions Claude may never run. Your entries **add** to a built-in baseline |
 | `confirm_actions` | `homeassistant.restart`, `hassio.supervisor_restart` | Actions allowed only after you approve them |
+| `unattended_mode` | `false` | Remove per-tool permission prompts entirely, for headless use. See below |
 
 The `disallow_actions` baseline is `homeassistant.stop`, `supervisor.core_stop`, `supervisor.watchdog_disable`, `hassio.host_reboot`, `hassio.host_shutdown` and `hassio.os_update`. Removing one from the list does not re-enable it, because the baseline is built into the app. To allow a baseline action, turn the guard off.
 
 `enable_mcp` behaves asymmetrically, which is worth knowing before you touch it. Turning it **on** also pre-approves Claude reading files in your config folder, so it stops asking about every file. Turning it back **off** undoes neither: the connection and the read pre-approvals stay in your settings until you remove them by hand. On a fresh install that has never run with it on, Claude has no entity access and asks before opening each file.
 
 There is one more option, `working_directory`, which sets the folder the terminal opens in. It defaults to `/homeassistant` and most people never need to change it. If you point it somewhere that does not exist, the app logs a warning and opens in `/homeassistant` instead.
+
+`unattended_mode` is for running Claude with nothing at the keyboard to answer prompts — a scheduled task, an automation-triggered session, anything where no human is watching the terminal. Turning it on sets `permissions.defaultMode: bypassPermissions` and exports `IS_SANDBOX=1`, which together are what let Claude Code run with zero per-tool prompts while this app is root inside its container. It does not touch the safety guard above: `guard_privileged_actions` keeps blocking and confirming the same actions either way, so leave that on. If you turn `unattended_mode` back off, the next app start removes the `bypassPermissions` setting again rather than leaving it in place — including if you (or an older version of this app) had set it by hand, so re-enable `unattended_mode` if that is how you got it there.
 
 ---
 

@@ -244,6 +244,11 @@ CMD ["/bin/bash", "-c", "\
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   AUTO_CONTINUE=$(jq -r '.auto_continue // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r 'if .enable_mcp == false then false else true end' /data/options.json) && \
+  UNATTENDED_MODE=$(jq -r 'if .unattended_mode == true then true else false end' /data/options.json) && \
+  if [ \"$UNATTENDED_MODE\" = \"true\" ]; then \
+    export IS_SANDBOX=1; \
+    echo '[INFO] Unattended mode: IS_SANDBOX=1 exported for this session'; \
+  fi && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
   WORK_DIR=$(jq -r '.working_directory // empty' /data/options.json) && \
@@ -273,6 +278,22 @@ CMD ["/bin/bash", "-c", "\
     else \
       rm -f /tmp/settings.prune; \
       echo '[WARN] Failed to remove deprecated Glob()/Grep() permission rules from settings.json'; \
+    fi; \
+  fi && \
+  if [ \"$UNATTENDED_MODE\" = \"true\" ]; then \
+    if jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"bypassPermissions\"' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+      mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
+      echo '[INFO] Unattended mode: permissions.defaultMode set to bypassPermissions'; \
+    else \
+      rm -f /tmp/settings.unattended; \
+      echo '[WARN] Failed to set permissions.defaultMode for unattended mode'; \
+    fi; \
+  elif jq -e '.permissions.defaultMode == \"bypassPermissions\"' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+    if jq 'del(.permissions.defaultMode)' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+      mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
+      echo '[INFO] Unattended mode off: removed a stale permissions.defaultMode: bypassPermissions (from a previous boot, or hand-edited) so the session does not hit the root/bypassPermissions launch failure'; \
+    else \
+      rm -f /tmp/settings.unattended; \
     fi; \
   fi && \
   if [ \"$ENABLE_MCP\" = \"true\" ]; then \
