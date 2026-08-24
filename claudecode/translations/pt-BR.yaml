@@ -68,15 +68,16 @@ configuration:
   unattended_mode:
     name: Modo Não Assistido
     description: >-
-      Executa o Claude Code sem avisos de permissão por ferramenta, para operação
-      totalmente não assistida. Define permissions.defaultMode como
+      Executa o Claude Code sem avisos de permissão por ferramenta, para
+      operação não assistida. Define permissions.defaultMode como
       bypassPermissions e a variável IS_SANDBOX que o Claude Code exige antes de
-      permitir isso enquanto executa como root neste contêiner. A barreira de
-      ações privilegiadas acima não é afetada: ações bloqueadas continuam
-      bloqueadas e ações que exigem confirmação continuam exigindo sua aprovação
-      independentemente desta opção. Desativado por padrão. Desativá-lo novamente
-      remove a configuração de bypass na próxima inicialização; mantenha a
-      Barreira de Ações Privilegiadas ativa enquanto isso estiver habilitado.
+      permitir isso enquanto executa como root neste contêiner. Enquanto estiver
+      ativo, as ações da lista de confirmação são recusadas em vez de
+      perguntadas, porque não há ninguém presente para responder; as ações
+      bloqueadas não mudam. Um defaultMode personalizado é substituído com um
+      aviso no log e restaurado quando esta opção é desativada. Desativado por
+      padrão. Mantenha a Barreira de Ações Privilegiadas ativa enquanto isso
+      estiver habilitado; é o único limite que resta sem os avisos.
 
 network:
   7681/tcp: Terminal Web (ttyd)

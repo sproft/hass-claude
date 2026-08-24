@@ -193,7 +193,7 @@ Change these on the app's **Configuration** tab.
 | `guard_privileged_actions` | `true` | Enforce the safety guard described above |
 | `disallow_actions` | six entries | Actions Claude may never run. Your entries **add** to a built-in baseline |
 | `confirm_actions` | `homeassistant.restart`, `hassio.supervisor_restart` | Actions allowed only after you approve them |
-| `unattended_mode` | `false` | Remove per-tool permission prompts entirely, for headless use. See below |
+| `unattended_mode` | `false` | Skip the per-tool approval prompts for headless use. Confirm-tier guard actions are refused instead of prompted. See below |
 
 The `disallow_actions` baseline is `homeassistant.stop`, `supervisor.core_stop`, `supervisor.watchdog_disable`, `hassio.host_reboot`, `hassio.host_shutdown` and `hassio.os_update`. Removing one from the list does not re-enable it, because the baseline is built into the app. To allow a baseline action, turn the guard off.
 
@@ -201,7 +201,13 @@ The `disallow_actions` baseline is `homeassistant.stop`, `supervisor.core_stop`,
 
 There is one more option, `working_directory`, which sets the folder the terminal opens in. It defaults to `/homeassistant` and most people never need to change it. If you point it somewhere that does not exist, the app logs a warning and opens in `/homeassistant` instead.
 
-`unattended_mode` is for running Claude with nothing at the keyboard to answer prompts — a scheduled task, an automation-triggered session, anything where no human is watching the terminal. Turning it on sets `permissions.defaultMode: bypassPermissions` and exports `IS_SANDBOX=1`, which together are what let Claude Code run with zero per-tool prompts while this app is root inside its container. It does not touch the safety guard above: `guard_privileged_actions` keeps blocking and confirming the same actions either way, so leave that on. If you turn `unattended_mode` back off, the next app start removes the `bypassPermissions` setting again rather than leaving it in place — including if you (or an older version of this app) had set it by hand, so re-enable `unattended_mode` if that is how you got it there.
+`unattended_mode` is for letting a long job run with nobody watching the terminal. You still start the job yourself, in the terminal this app provides: the app has no scheduler or non-interactive entry point of its own, so "unattended" means you type the task and walk away, not that Home Assistant can start Claude for you. Turning the option on sets `permissions.defaultMode: bypassPermissions` and exports `IS_SANDBOX=1`, which together let Claude Code run without per-tool permission prompts while this app is root inside its container.
+
+Be clear about what that removes. The permission prompts are the layer that asks before every file write, shell command, web fetch and MCP service call. With them gone, the only boundary left is the privileged-action guard, and the guard covers Home Assistant lifecycle actions (the block and confirm lists above) plus its own configuration files, nothing more. Everything else runs unprompted: editing or deleting files anywhere this app can write (`/homeassistant`, `/share`, `/media`, `/addon_configs`), installing packages, fetching URLs, and every MCP service call that is not on a guard list. Leave `guard_privileged_actions` on (the app logs a warning if you turn both loose at once), and remember that any HA user who can open this app's panel can type into the same session, so treat panel access accordingly.
+
+While `unattended_mode` is on, guard actions on the confirm list are refused instead of prompted, with an explanation Claude can relay, because nobody is present to answer. A refusal is fast and visible; a prompt with no one at the keyboard would hang an interactive run, and fail a `claude -p` one. Deny-tier actions are unchanged. Turn the option off and the confirm tier goes back to prompting on the next start.
+
+Two more mechanical notes. If you had set a custom `permissions.defaultMode` yourself (for example `acceptEdits`), turning `unattended_mode` on replaces it with a logged warning, and turning it off restores your previous value; with no previous value the key is simply removed, including one you (or an older version of this app) had set by hand, so re-enable `unattended_mode` if that is how you got it there. And if a future Claude Code release stops honouring `IS_SANDBOX`, the boot detects that, leaves the normal prompting mode in place and says so loudly in the log, instead of writing a setting that would make the CLI refuse to launch as root on every restart.
 
 ---
 
@@ -314,7 +320,7 @@ By design. Do it yourself in the Home Assistant UI, or set `guard_privileged_act
 
 Moving one of the six built-in blocks into `confirm_actions` will **not** turn it into a prompt. The built-in list is checked first and wins, so the action stays refused. Downgrading only works for actions you added to `disallow_actions` yourself.
 
-Also note that if you run Claude in one-off mode (`claude "..."`) there is nobody to answer a confirmation prompt, so anything on the confirm list is skipped rather than run.
+Also note that if you run Claude in one-off mode (`claude "..."`) there is nobody to answer a confirmation prompt, so anything on the confirm list fails safe toward not running. With `unattended_mode` on, confirm-tier actions are refused outright with an explanation instead, in every kind of session.
 
 ### `claude: command not found`, or a permission error
 
