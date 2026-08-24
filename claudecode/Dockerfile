@@ -316,11 +316,18 @@ CMD ["/bin/bash", "-c", "\
     CLI_REAL=$(readlink -f \"$CLI_BIN\" 2>/dev/null || echo \"$CLI_BIN\"); \
     if [ -e \"$CLI_REAL\" ] && ! grep -qs IS_SANDBOX \"$CLI_REAL\"; then \
       echo '[ERROR] The installed Claude Code CLI does not recognize the IS_SANDBOX override, so permissions.defaultMode: bypassPermissions would make it refuse to launch as root on every start. Leaving the normal prompting mode in place; unattended_mode is degraded until a CLI version that supports IS_SANDBOX is installed.'; \
-      if jq -e '.permissions.defaultMode == \"bypassPermissions\"' \"$SETTINGS_FILE\" >/dev/null 2>&1 && \
-         jq 'del(.permissions.defaultMode)' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
-        mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
-        echo '[ERROR] Removed the permissions.defaultMode: bypassPermissions an earlier boot wrote, so the session can still launch'; \
-      else rm -f /tmp/settings.unattended; fi; \
+      if jq -e '.permissions.defaultMode == \"bypassPermissions\"' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+        SAVED_MODE=''; \
+        if [ -f \"$SIDECAR\" ]; then SAVED_MODE=$(cat \"$SIDECAR\" 2>/dev/null || echo ''); fi; \
+        case \"$SAVED_MODE\" in default|acceptEdits|plan) ;; *) SAVED_MODE='';; esac; \
+        if [ -n \"$SAVED_MODE\" ] && jq --arg m \"$SAVED_MODE\" '.permissions.defaultMode = $m' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+          mv /tmp/settings.unattended \"$SETTINGS_FILE\" && rm -f \"$SIDECAR\" && \
+          echo \"[ERROR] Removed the permissions.defaultMode: bypassPermissions an earlier boot wrote and restored your previous permissions.defaultMode: $SAVED_MODE, so the session can still launch\"; \
+        elif jq 'del(.permissions.defaultMode)' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+          mv /tmp/settings.unattended \"$SETTINGS_FILE\" && rm -f \"$SIDECAR\" && \
+          echo '[ERROR] Removed the permissions.defaultMode: bypassPermissions an earlier boot wrote, so the session can still launch'; \
+        else rm -f /tmp/settings.unattended; fi; \
+      fi; \
     else \
       PREV_MODE=$(jq -r '.permissions.defaultMode // empty' \"$SETTINGS_FILE\" 2>/dev/null || echo ''); \
       if [ -n \"$PREV_MODE\" ] && [ \"$PREV_MODE\" != \"bypassPermissions\" ]; then \

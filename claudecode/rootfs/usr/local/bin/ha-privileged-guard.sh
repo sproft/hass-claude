@@ -207,17 +207,24 @@ hassio.os_update"
   # file carrying the hook registration and the permissions.deny floor. Only
   # WRITE shapes are matched (a redirect onto the file, tee, an mv/cp whose
   # DESTINATION is the file, sed -i); reading the same files with cat/grep/jq,
-  # or a cp FROM them to a backup, stays allowed. Both the /root/.claude
-  # spelling and its symlink target are covered. Best-effort like the rest of
-  # this function: a relative path after cd, or an interpreter, is out of
-  # scope per the header.
+  # or a cp FROM them to a backup, stays allowed. The $unq prefix consumes
+  # complete quoted strings before the verb, so a write shape mentioned as
+  # DATA (`grep "tee .../ha-guard.json" notes.md`, an echo of a restore
+  # recipe) is never matched -- the same data-vs-command discipline _HA_CLI
+  # applies above. The accepted residual miss is a write nested inside a
+  # quoted interpreter string (`bash -c "... > .../ha-guard.json"`), the same
+  # trade-off the header documents for wrappers. The mv/cp destination must
+  # end the command apart from a redirection, a comment or a separator, so a
+  # cp FROM the file to a backup stays a read. Both the /root/.claude
+  # spelling and its symlink target are covered.
   local gp='(/root/\.claude|/homeassistant/\.claudecode)/ha-guard\.json' \
-        sp='(/root/\.claude|/homeassistant/\.claudecode)/settings\.json'
+        sp='(/root/\.claude|/homeassistant/\.claudecode)/settings\.json' \
+        unq='^(([^"'"'"']*("[^"]*"|'"'"'[^'"'"']*'"'"'))*[^"'"'"']*[^"'"'"'[:alnum:]_]|)'
   _writes_to() {
-    _m '>>?[[:space:]]*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
-    || _m '(^|[^[:alnum:]_])tee[[:space:]]+(-[a-z]+[[:space:]]+)*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
-    || _m '(^|[^[:alnum:]_])(mv|cp)[[:space:]][^|;&>]*[[:space:]][\"'"'"']*'"$1"'[\"'"'"']*[[:space:]]*([;&|)]|$)' \
-    || _m '(^|[^[:alnum:]_])sed[[:space:]]+-[a-z]*i[^|;&]*[[:space:]][\"'"'"']*'"$1"'([^[:alnum:]_.]|$)'
+    _m "$unq"'>>?[[:space:]]*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
+    || _m "$unq"'tee[[:space:]]+(-[a-z]+[[:space:]]+)*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
+    || _m "$unq"'(mv|cp)[[:space:]][^|;&>]*[[:space:]][\"'"'"']*'"$1"'[\"'"'"']*[[:space:]]*([;&|)#]|[0-9]*[<>]|$)' \
+    || _m "$unq"'sed[[:space:]]+-[a-z]*i[^|;&]*[[:space:]][\"'"'"']*'"$1"'([^[:alnum:]_.]|$)'
   }
   _writes_to "$gp" && out="$out
 guard.tamper_policy"

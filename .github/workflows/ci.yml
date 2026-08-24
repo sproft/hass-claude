@@ -579,6 +579,38 @@ jobs:
           grep -q '\[WARN\] unattended_mode is on while guard_privileged_actions is off' \
             smoke/boot-unatt-noguard.log
 
+          # Case 6: the preflight degrades gracefully on a CLI that dropped
+          # IS_SANDBOX support (the auto_update_claude drift scenario), and
+          # the degraded boot consumes the sidecar so a hand-set defaultMode
+          # still comes back, instead of leaving a stale bypassPermissions
+          # relaunch loop (the #33 shape) or orphaning the saved value. The
+          # stub claude sits in /data/npm-global/bin, which is first in PATH,
+          # and .seed-complete stops the boot re-seeding over it.
+          mkdir -p smoke/data-degraded/npm-global/bin smoke/ha-degraded/.claudecode
+          cp smoke/data-unattended/options.json smoke/data-degraded/options.json
+          printf '#!/bin/sh\nexit 0\n' > smoke/data-degraded/npm-global/bin/claude
+          chmod +x smoke/data-degraded/npm-global/bin/claude
+          touch smoke/data-degraded/npm-global/.seed-complete
+          cat > smoke/ha-degraded/.claudecode/settings.json <<'EOF'
+          {"permissions":{"defaultMode":"bypassPermissions"}}
+          EOF
+          printf '%s' 'acceptEdits' > smoke/ha-degraded/.claudecode/.defaultmode-before-unattended
+          docker run --rm \
+            -v "$PWD/smoke/data-degraded:/data:rw" \
+            -v "$PWD/smoke/ha-degraded:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-degraded.log
+          grep -q 'does not recognize the IS_SANDBOX override' smoke/boot-degraded.log
+          grep -q 'restored your previous permissions.defaultMode: acceptEdits' smoke/boot-degraded.log
+          jq -e '.permissions.defaultMode == "acceptEdits"' \
+            smoke/ha-degraded/.claudecode/settings.json >/dev/null \
+            || { echo "::error::degraded preflight did not restore the hand-set defaultMode"; exit 1; }
+          if [ -e smoke/ha-degraded/.claudecode/.defaultmode-before-unattended ]; then
+            echo "::error::degraded preflight left the sidecar behind"; exit 1
+          fi
+
       - name: Claude CLI honors IS_SANDBOX under root (issue #39)
         run: |
           set -euo pipefail
@@ -865,6 +897,17 @@ jobs:
           expect "bash cp settings to backup (safe)"  '{"tool_name":"Bash","tool_input":{"command":"cp /root/.claude/settings.json /tmp/settings-backup.json"}}'          allow
           expect "bash grep settings (safe)"          '{"tool_name":"Bash","tool_input":{"command":"grep defaultMode /root/.claude/settings.json"}}'                      allow
           expect "bash redirect to sibling (safe)"    '{"tool_name":"Bash","tool_input":{"command":"jq . /root/.claude/settings.json > /root/.claude/settings.json.bak"}}' allow
+          # A trailing redirection or comment after the destination must not
+          # defeat the mv/cp pattern, and a cp FROM a guard file stays a read.
+          expect "bash cp onto policy w/ redirect"    '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/x.json /root/.claude/ha-guard.json 2>/dev/null"}}'            deny
+          expect "bash cp guard file to backup (safe)" '{"tool_name":"Bash","tool_input":{"command":"cp -f /root/.claude/ha-guard.json /tmp/bak"}}'                       allow
+          # A write shape quoted as DATA must stay allowed (the same
+          # data-vs-command rule the ha CLI matcher enforces), while a
+          # genuinely quoted destination path still counts as a write.
+          expect "bash grep quoting tee (safe)"       '{"tool_name":"Bash","tool_input":{"command":"grep -n \"tee /root/.claude/ha-guard.json\" notes.md"}}'              allow
+          expect "bash echo quoting cp (safe)"        '{"tool_name":"Bash","tool_input":{"command":"echo \"to restore: cp /tmp/x /root/.claude/settings.json\""}}'        allow
+          expect "bash echo quoting redirect (safe)"  '{"tool_name":"Bash","tool_input":{"command":"echo \"never do: > /root/.claude/ha-guard.json\""}}'                  allow
+          expect "bash tee quoted path"               '{"tool_name":"Bash","tool_input":{"command":"printf %s {} | tee \"/root/.claude/ha-guard.json\""}}'                deny
           # The policy-file tamper reason must point at the app options, not
           # at any way to reach the file.
           twhy="$(run_hook '{"tool_name":"Write","tool_input":{"file_path":"/root/.claude/ha-guard.json","content":"{}"}}' \
