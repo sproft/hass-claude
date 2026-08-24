@@ -20,7 +20,10 @@ SETTINGS_FILE="${1:-/root/.claude/settings.json}"
 OPTIONS_FILE="${HA_GUARD_OPTIONS:-/data/options.json}"
 GUARD_FILE="${HA_GUARD_CONFIG:-/root/.claude/ha-guard.json}"
 HOOK_CMD="${HA_GUARD_HOOK:-/usr/local/bin/ha-privileged-guard.sh}"
-MATCHER="Bash|mcp__homeassistant__call_service_tool|mcp__homeassistant__restart_ha"
+# Write/Edit/MultiEdit/NotebookEdit are on the matcher for guard-file tamper
+# protection only: the hook exits immediately for any file that is not the
+# guard's own policy or settings file, so ordinary edits stay un-prompted.
+MATCHER="Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__homeassistant__call_service_tool|mcp__homeassistant__restart_ha"
 
 # Defaults must mirror the `options:` block in claudecode/config.yaml. They are
 # repeated here so the guard is still safe if options.json is missing a key
@@ -55,6 +58,11 @@ fi
 # Only an explicit false disables it.
 ENABLED="$(jq -r 'if .guard_privileged_actions == false then "false" else "true" end' "$OPTIONS_FILE" 2>/dev/null || echo true)"
 case "$ENABLED" in false) ENABLED=false ;; *) ENABLED=true ;; esac
+# unattended_mode is stamped into the policy file so the runtime hook can
+# promote confirm-tier asks to denies while nobody is present to answer them.
+# Explicit == comparison, same convention as the boot script's option reads.
+UNATTENDED="$(jq -r 'if .unattended_mode == true then "true" else "false" end' "$OPTIONS_FILE" 2>/dev/null || echo false)"
+case "$UNATTENDED" in true) UNATTENDED=true ;; *) UNATTENDED=false ;; esac
 # Lower-case list entries so a mixed-case config entry still matches (the hook
 # lower-cases the incoming domain.service before looking it up).
 DENY_JSON="$(jq -c --argjson d "$DEFAULT_DENY" '(.disallow_actions // $d) | map(ascii_downcase)' "$OPTIONS_FILE" 2>/dev/null || echo "$DEFAULT_DENY")"
@@ -62,7 +70,8 @@ CONFIRM_JSON="$(jq -c --argjson c "$DEFAULT_CONFIRM" '(.confirm_actions // $c) |
 
 # Write the policy file the runtime hook reads.
 if jq -cn --argjson e "$ENABLED" --argjson d "$DENY_JSON" --argjson c "$CONFIRM_JSON" \
-     '{enabled:$e,deny:$d,confirm:$c}' > "$GUARD_FILE.tmp" 2>/dev/null; then
+     --argjson u "$UNATTENDED" \
+     '{enabled:$e,deny:$d,confirm:$c,unattended:$u}' > "$GUARD_FILE.tmp" 2>/dev/null; then
   mv "$GUARD_FILE.tmp" "$GUARD_FILE"
 else
   rm -f "$GUARD_FILE.tmp"

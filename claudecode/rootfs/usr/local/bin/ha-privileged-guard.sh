@@ -43,8 +43,15 @@ CONFIG="${HA_GUARD_CONFIG:-/root/.claude/ha-guard.json}"
 # Immutable baseline. These are always enforced while the guard is on, even if
 # the policy file is gone or malformed. Keep in sync with the config.yaml
 # defaults (which are shown to the user); the config lists only ever ADD to this.
-BUILTIN_DENY="homeassistant.stop supervisor.core_stop supervisor.watchdog_disable hassio.host_reboot hassio.host_shutdown hassio.os_update"
-BUILTIN_CONFIRM="homeassistant.restart hassio.supervisor_restart"
+# The guard.tamper_* ids are internal (not domain.service, not user-visible in
+# config.yaml): they are derived when a tool call writes onto the guard's own
+# files, so the header's "mistakes and drift" promise holds under
+# bypassPermissions too, where no ordinary permission prompt would catch an
+# unintended write. tamper_policy (the guard's policy file) is deny-tier;
+# tamper_settings (the settings file carrying the hook + deny floor) is
+# confirm-tier so an attended "add a permission rule for me" flow still works.
+BUILTIN_DENY="homeassistant.stop supervisor.core_stop supervisor.watchdog_disable hassio.host_reboot hassio.host_shutdown hassio.os_update guard.tamper_policy"
+BUILTIN_CONFIRM="homeassistant.restart hassio.supervisor_restart guard.tamper_settings"
 
 # The authority part of a URL pointing at the Supervisor API, used by _api()
 # below. Alternatives, in order: any explicit http(s) URL; the `supervisor` and
@@ -79,40 +86,10 @@ _HA_OS='(os|hassos)'
 # floor still covers the worst shell commands). jq is a hard image dependency.
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Resolve the master switch and any user-added entries from the policy file.
-# Missing/corrupt file -> keep the baseline (fail closed). Only an explicit
-# enabled:false disables the guard.
-enabled=true
-extra_deny='[]'
-extra_confirm='[]'
-if [ -r "$CONFIG" ]; then
-  # Note: `.enabled // true` is WRONG here - jq's // treats a literal false as
-  # "absent" and would return true, so the guard could never be switched off.
-  # Only an explicit enabled:false disables; anything else stays on.
-  e="$(jq -r 'if .enabled == false then "false" else "true" end' "$CONFIG" 2>/dev/null || echo true)"
-  [ "$e" = "false" ] && enabled=false
-  # Keep only the string entries. A wrong-typed value (.deny as a string, or an
-  # array holding a number) must not be allowed to reach the union below: it
-  # would make that jq expression error out and take the hard-coded baseline
-  # down with it. Filtering here means the union can only ever ADD to the
-  # baseline, which is the documented contract.
-  extra_deny="$(jq -c '[ (.deny // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
-  extra_confirm="$(jq -c '[ (.confirm // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
-fi
-[ "$enabled" = "true" ] || exit 0
-
-# Effective, deduped, lower-cased lists = baseline + user additions. The
-# fallback is the BASELINE, never an empty list: if anything at all goes wrong
-# building the union the guard must still enforce its floor rather than wave
-# every action through.
-baseline_only() { jq -cn --arg b "$1" '$b | ascii_downcase | split(" ")'; }
-deny_all="$(jq -cn --argjson x "$extra_deny" --arg b "$BUILTIN_DENY" \
-  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
-  || baseline_only "$BUILTIN_DENY")"
-confirm_all="$(jq -cn --argjson x "$extra_confirm" --arg b "$BUILTIN_CONFIRM" \
-  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
-  || baseline_only "$BUILTIN_CONFIRM")"
-
+# Read the tool call FIRST and derive its action ids before touching the policy
+# file: with Write/Edit on the hook matcher this script now runs on every
+# ordinary file edit, and the common case (no privileged action implied) must
+# exit after one or two jq spawns, not after the four policy-file reads below.
 input="$(cat)"
 tool="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)"
 [ -n "$tool" ] || exit 0
@@ -226,6 +203,34 @@ hassio.supervisor_restart"
     || _api '/os/update'; } && out="$out
 hassio.os_update"
 
+  # Shell writes onto the guard's own files: the policy file, or the settings
+  # file carrying the hook registration and the permissions.deny floor. Only
+  # WRITE shapes are matched (a redirect onto the file, tee, an mv/cp whose
+  # DESTINATION is the file, sed -i); reading the same files with cat/grep/jq,
+  # or a cp FROM them to a backup, stays allowed. The $unq prefix consumes
+  # complete quoted strings before the verb, so a write shape mentioned as
+  # DATA (`grep "tee .../ha-guard.json" notes.md`, an echo of a restore
+  # recipe) is never matched -- the same data-vs-command discipline _HA_CLI
+  # applies above. The accepted residual miss is a write nested inside a
+  # quoted interpreter string (`bash -c "... > .../ha-guard.json"`), the same
+  # trade-off the header documents for wrappers. The mv/cp destination must
+  # end the command apart from a redirection, a comment or a separator, so a
+  # cp FROM the file to a backup stays a read. Both the /root/.claude
+  # spelling and its symlink target are covered.
+  local gp='(/root/\.claude|/homeassistant/\.claudecode)/ha-guard\.json' \
+        sp='(/root/\.claude|/homeassistant/\.claudecode)/settings\.json' \
+        unq='^(([^"'"'"']*("[^"]*"|'"'"'[^'"'"']*'"'"'))*[^"'"'"']*[^"'"'"'[:alnum:]_]|)'
+  _writes_to() {
+    _m "$unq"'>>?[[:space:]]*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
+    || _m "$unq"'tee[[:space:]]+(-[a-z]+[[:space:]]+)*[\"'"'"']*'"$1"'([^[:alnum:]_.]|$)' \
+    || _m "$unq"'(mv|cp)[[:space:]][^|;&>]*[[:space:]][\"'"'"']*'"$1"'[\"'"'"']*[[:space:]]*([;&|)#]|[0-9]*[<>]|$)' \
+    || _m "$unq"'sed[[:space:]]+-[a-z]*i[^|;&]*[[:space:]][\"'"'"']*'"$1"'([^[:alnum:]_.]|$)'
+  }
+  _writes_to "$gp" && out="$out
+guard.tamper_policy"
+  _writes_to "$sp" && out="$out
+guard.tamper_settings"
+
   printf '%s\n' "$out"
 }
 
@@ -243,10 +248,76 @@ case "$tool" in
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
     [ -n "$cmd" ] && actions="$(derive_bash_actions "$cmd")"
     ;;
+  Write|Edit|MultiEdit|NotebookEdit)
+    # Guard-file tamper protection. These tools never touch HA services, so the
+    # only question is the target path. Both the /root/.claude spelling and its
+    # symlink target under /homeassistant/.claudecode must match: readlink
+    # closes the gap between them, and if it cannot resolve (target does not
+    # exist yet, or busybox quirks) the raw path still matches one spelling.
+    fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)"
+    [ -n "$fp" ] || exit 0
+    rp="$(readlink -f -- "$fp" 2>/dev/null || true)"
+    [ -n "$rp" ] || rp="$fp"
+    for p in "$fp" "$rp"; do
+      case "$p" in
+        /root/.claude/ha-guard.json|/homeassistant/.claudecode/ha-guard.json)
+          actions="guard.tamper_policy" ;;
+        /root/.claude/settings.json|/homeassistant/.claudecode/settings.json)
+          [ "$actions" = "guard.tamper_policy" ] || actions="guard.tamper_settings" ;;
+      esac
+    done
+    ;;
   *)
     exit 0
     ;;
 esac
+
+# Nothing derived: the overwhelmingly common case. Exit before the policy-file
+# reads so ordinary edits and commands pay almost nothing for the guard.
+case "$actions" in *[![:space:]]*) ;; *) exit 0 ;; esac
+
+# Resolve the master switch, the unattended flag, and any user-added entries
+# from the policy file. Missing/corrupt file -> keep the baseline (fail
+# closed). Only an explicit enabled:false disables the guard.
+enabled=true
+unattended=false
+extra_deny='[]'
+extra_confirm='[]'
+# The env var covers the fail-closed case where the policy file is missing or
+# corrupt (it is exported by the boot script when unattended_mode is on); the
+# policy-file flag below covers shells that lack the boot environment, such as
+# a `docker exec` session. Unattended-if-either fails toward refusing, which
+# is the safe direction.
+[ "${HA_GUARD_UNATTENDED:-}" = "1" ] && unattended=true
+if [ -r "$CONFIG" ]; then
+  # Note: `.enabled // true` is WRONG here - jq's // treats a literal false as
+  # "absent" and would return true, so the guard could never be switched off.
+  # Only an explicit enabled:false disables; anything else stays on.
+  e="$(jq -r 'if .enabled == false then "false" else "true" end' "$CONFIG" 2>/dev/null || echo true)"
+  [ "$e" = "false" ] && enabled=false
+  u="$(jq -r 'if .unattended == true then "true" else "false" end' "$CONFIG" 2>/dev/null || echo false)"
+  [ "$u" = "true" ] && unattended=true
+  # Keep only the string entries. A wrong-typed value (.deny as a string, or an
+  # array holding a number) must not be allowed to reach the union below: it
+  # would make that jq expression error out and take the hard-coded baseline
+  # down with it. Filtering here means the union can only ever ADD to the
+  # baseline, which is the documented contract.
+  extra_deny="$(jq -c '[ (.deny // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
+  extra_confirm="$(jq -c '[ (.confirm // empty | arrays)[] | select(type == "string") ]' "$CONFIG" 2>/dev/null || echo '[]')"
+fi
+[ "$enabled" = "true" ] || exit 0
+
+# Effective, deduped, lower-cased lists = baseline + user additions. The
+# fallback is the BASELINE, never an empty list: if anything at all goes wrong
+# building the union the guard must still enforce its floor rather than wave
+# every action through.
+baseline_only() { jq -cn --arg b "$1" '$b | ascii_downcase | split(" ")'; }
+deny_all="$(jq -cn --argjson x "$extra_deny" --arg b "$BUILTIN_DENY" \
+  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
+  || baseline_only "$BUILTIN_DENY")"
+confirm_all="$(jq -cn --argjson x "$extra_confirm" --arg b "$BUILTIN_CONFIRM" \
+  '(($b | ascii_downcase | split(" ")) + ($x | map(ascii_downcase))) | unique' 2>/dev/null \
+  || baseline_only "$BUILTIN_CONFIRM")"
 
 # Pick the most restrictive tier across all derived ids: deny > ask > allow.
 decision=""
@@ -266,10 +337,33 @@ EOF
 
 [ -n "$decision" ] || exit 0
 
+# Unattended promotion (issue #39 follow-up): an ask with nobody present to
+# answer it either hangs an interactive session on a prompt or fails a
+# `claude -p` step mid-plan. Refusing fast, with a reason Claude can relay, is
+# both safer and more legible. Deny stays deny; the loop above breaks on a
+# real deny before an ask can be recorded, so promotion never masks one.
+promoted=false
+if [ "$decision" = "ask" ] && [ "$unattended" = "true" ]; then
+  decision="deny"
+  promoted=true
+fi
+
 if [ "$decision" = "deny" ]; then
-  reason="Blocked by the Home Assistant privileged-action guard: '${matched}' can take Home Assistant offline or require physical access to recover, so it is not allowed autonomously. Prefer reloading a specific YAML domain (for example automation.reload) over stopping or rebooting. If this is genuinely required, say so plainly and let the user do it from the Home Assistant UI (Settings > System), or tell them they can relax the policy themselves via the app's guard_privileged_actions / disallow_actions options. Do NOT route around this block yourself, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing it: naming the action and letting them decide is the whole point of the boundary."
+  if [ "$matched" = "guard.tamper_policy" ]; then
+    reason="Blocked by the Home Assistant privileged-action guard: that file is the guard's own policy file, managed by this app from its options, and the next app start regenerates it anyway. Editing it directly would change a safety policy without the user's say-so. If the user wants the policy changed, point them at the guard_privileged_actions / disallow_actions / confirm_actions options on the app's Configuration tab. Do NOT try another path or another tool to reach the same file, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing this."
+  elif [ "$promoted" = "true" ] && [ "$matched" = "guard.tamper_settings" ]; then
+    reason="Blocked by the Home Assistant privileged-action guard: unattended_mode is on, and that file is the Claude Code settings file carrying the guard's hook registration and permission deny floor. With nobody present to review a change to it, the edit is refused. Note what you wanted to change and why, and let the user make the edit in an attended session. Do NOT route around this refusal yourself, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing it."
+  elif [ "$promoted" = "true" ]; then
+    reason="The Home Assistant privileged-action guard normally lets '${matched}' run after human confirmation, but unattended_mode is on and nobody is present to confirm, so it is refused rather than left waiting on a prompt. Prefer reloading a specific YAML domain (for example automation.reload) if that is enough. If the action is genuinely required, note it plainly and let the user run it in an attended session or from the Home Assistant UI (Settings > System), or turn unattended_mode off first. Do NOT route around this refusal yourself, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing it."
+  else
+    reason="Blocked by the Home Assistant privileged-action guard: '${matched}' can take Home Assistant offline or require physical access to recover, so it is not allowed autonomously. Prefer reloading a specific YAML domain (for example automation.reload) over stopping or rebooting. If this is genuinely required, say so plainly and let the user do it from the Home Assistant UI (Settings > System), or tell them they can relax the policy themselves via the app's guard_privileged_actions / disallow_actions options. Do NOT route around this block yourself, and do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing it: naming the action and letting them decide is the whole point of the boundary."
+  fi
 else
-  reason="The Home Assistant privileged-action guard requires human confirmation for '${matched}'. Explain to the user what you need and why, and let them approve. A full restart causes a short outage; prefer reloading a specific YAML domain if that is enough. After any state-changing call, re-read the entity to confirm it actually took effect rather than trusting the call's return."
+  if [ "$matched" = "guard.tamper_settings" ]; then
+    reason="The Home Assistant privileged-action guard asks for human confirmation before this file is edited: it is the Claude Code settings file carrying the guard's hook registration and permission deny floor, so a wrong edit can quietly weaken a safety boundary. Explain exactly what you will change and why, and let the user approve."
+  else
+    reason="The Home Assistant privileged-action guard requires human confirmation for '${matched}'. Explain to the user what you need and why, and let them approve. A full restart causes a short outage; prefer reloading a specific YAML domain if that is enough. After any state-changing call, re-read the entity to confirm it actually took effect rather than trusting the call's return."
+  fi
 fi
 
 jq -cn --arg d "$decision" --arg r "$reason" \

@@ -65,6 +65,19 @@ configuration:
       Ações que exigem confirmação humana explícita antes de executar, como
       identificadores dominio.servico. homeassistant.restart é incluído por padrão
       para que uma reinicialização completa nunca seja acionada sem aprovação.
+  unattended_mode:
+    name: Modo Não Assistido
+    description: >-
+      Executa o Claude Code sem avisos de permissão por ferramenta, para
+      operação não assistida. Define permissions.defaultMode como
+      bypassPermissions e a variável IS_SANDBOX que o Claude Code exige antes de
+      permitir isso enquanto executa como root neste contêiner. Enquanto estiver
+      ativo, as ações da lista de confirmação são recusadas em vez de
+      perguntadas, porque não há ninguém presente para responder; as ações
+      bloqueadas não mudam. Um defaultMode personalizado é substituído com um
+      aviso no log e restaurado quando esta opção é desativada. Desativado por
+      padrão. Mantenha a Barreira de Ações Privilegiadas ativa enquanto isso
+      estiver habilitado; é o único limite que resta sem os avisos.
 
 network:
   7681/tcp: Terminal Web (ttyd)

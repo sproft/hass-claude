@@ -392,6 +392,259 @@ jobs:
             exit 1
           fi
 
+      - name: Boot honors unattended_mode (issue #39)
+        run: |
+          set -euo pipefail
+          # Dedicated stub: replace the tail `exec ttyd ...` with a probe that
+          # prints whether IS_SANDBOX is actually EXPORTED at the exec point.
+          # `env` lists only exported variables, so this catches a refactor
+          # that loses the export (plain assignment, a subshell); the
+          # "[INFO] ... exported" log grep cannot, because that line is
+          # printed by the same branch that does the export. The braces keep
+          # an earlier boot failure fatal instead of masked by the fallback.
+          python3 .github/scripts/extract-boot-script.py > smoke/boot-real-unattended.sh
+          sed -E 's#exec ttyd .*$#{ env | grep "^IS_SANDBOX=" || echo "IS_SANDBOX=unset"; }#' \
+            smoke/boot-real-unattended.sh > smoke/boot-sandboxprobe.sh
+
+          # Case 1: unattended_mode: true must export IS_SANDBOX and
+          # HA_GUARD_UNATTENDED, set permissions.defaultMode, and stamp
+          # unattended:true into ha-guard.json, all WITHOUT destroying settings
+          # already in the file. Seed some first: this fixture has
+          # enable_mcp:false, so nothing else populates settings.json and an
+          # empty {} input could not tell "merged" from "replaced wholesale".
+          mkdir -p smoke/data-unattended smoke/ha-unattended/.claudecode
+          cat > smoke/data-unattended/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300,
+            "unattended_mode": true
+          }
+          EOF
+          cat > smoke/ha-unattended/.claudecode/settings.json <<'EOF'
+          {"model":"opus","permissions":{"deny":["Bash(rm -rf /:*)"],"allow":["Read(/homeassistant/**)"]}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-unattended:/data:rw" \
+            -v "$PWD/smoke/ha-unattended:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-unattended-on.log
+          grep -q '\[INFO\] Unattended mode: IS_SANDBOX=1 exported for this session' smoke/boot-unattended-on.log
+          grep -q '\[INFO\] Unattended mode: HA_GUARD_UNATTENDED=1 exported for the privileged-action guard' smoke/boot-unattended-on.log
+          grep -q '\[INFO\] Unattended mode: permissions.defaultMode set to bypassPermissions' smoke/boot-unattended-on.log
+          # Probe line: the variable is really in the exported environment at
+          # the point ttyd would exec, not merely logged earlier.
+          grep -qx 'IS_SANDBOX=1' smoke/boot-unattended-on.log
+          S=smoke/ha-unattended/.claudecode/settings.json
+          jq -e '.permissions.defaultMode == "bypassPermissions"' "$S" >/dev/null \
+            || { echo "::error::unattended_mode:true did not set permissions.defaultMode"; exit 1; }
+          # The set branch (and the guard configurator that now runs BEFORE it)
+          # must preserve everything that was already in settings.json.
+          jq -e '.model == "opus"' "$S" >/dev/null \
+            || { echo "::error::unattended set branch clobbered unrelated top-level settings"; exit 1; }
+          jq -e '((.permissions.deny // []) | index("Bash(rm -rf /:*)")) != null' "$S" >/dev/null \
+            || { echo "::error::unattended set branch dropped a user permissions.deny rule"; exit 1; }
+          jq -e '((.permissions.allow // []) | index("Read(/homeassistant/**)")) != null' "$S" >/dev/null \
+            || { echo "::error::unattended set branch dropped a user permissions.allow rule"; exit 1; }
+          jq -e '.unattended == true' smoke/ha-unattended/.claudecode/ha-guard.json >/dev/null \
+            || { echo "::error::unattended:true was not stamped into ha-guard.json"; exit 1; }
+
+          # Case 2: unattended_mode: false (or absent) must PRUNE a
+          # permissions.defaultMode: bypassPermissions left by an earlier boot
+          # (or hand-edited, the exact #39 report) rather than leaving it in
+          # place -- the same "shipped settings only ever merge in additively"
+          # trap as the Glob/Grep prune (#33) and the stray mcpServers prune
+          # (#20/#22 era). A stale key here is exactly what makes the CLI
+          # refuse to launch as root once IS_SANDBOX is no longer set.
+          mkdir -p smoke/data-unattended-off smoke/ha-unattended-off/.claudecode
+          cat > smoke/data-unattended-off/options.json <<'EOF'
+          {
+            "enable_mcp": false,
+            "terminal_font_size": 14,
+            "terminal_theme": "dark",
+            "working_directory": "/homeassistant",
+            "session_persistence": false,
+            "auto_update_claude": false,
+            "claude_update_timeout": 300,
+            "unattended_mode": false
+          }
+          EOF
+          cat > smoke/ha-unattended-off/.claudecode/settings.json <<'EOF'
+          {"permissions":{"defaultMode":"bypassPermissions","allow":["Read(/homeassistant/**)"]}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-unattended-off:/data:rw" \
+            -v "$PWD/smoke/ha-unattended-off:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-unattended-off.log
+          grep -q '\[INFO\] Unattended mode off: removed a stale permissions.defaultMode: bypassPermissions' \
+            smoke/boot-unattended-off.log
+          # IS_SANDBOX must NOT be exported when the option is off.
+          grep -qx 'IS_SANDBOX=unset' smoke/boot-unattended-off.log
+          jq -e '(.permissions | has("defaultMode")) | not' \
+            smoke/ha-unattended-off/.claudecode/settings.json >/dev/null \
+            || { echo "::error::stale permissions.defaultMode was not pruned when unattended_mode is off"; exit 1; }
+          # The prune must not touch unrelated permission rules.
+          jq -e '(.permissions.allow // []) | index("Read(/homeassistant/**)") != null' \
+            smoke/ha-unattended-off/.claudecode/settings.json >/dev/null \
+            || { echo "::error::unattended_mode prune removed unrelated settings"; exit 1; }
+          jq -e '.unattended == false' smoke/ha-unattended-off/.claudecode/ha-guard.json >/dev/null \
+            || { echo "::error::ha-guard.json should carry unattended:false when the option is off"; exit 1; }
+
+          # Case 3: a hand-set defaultMode survives an on/off round trip. On
+          # replaces acceptEdits with bypassPermissions, warns, and remembers
+          # the old value in a sidecar; off restores it and deletes the sidecar.
+          mkdir -p smoke/data-roundtrip smoke/ha-roundtrip/.claudecode
+          sed 's/"unattended_mode": false/"unattended_mode": true/' \
+            smoke/data-unattended-off/options.json > smoke/data-roundtrip/options.json
+          cat > smoke/ha-roundtrip/.claudecode/settings.json <<'EOF'
+          {"permissions":{"defaultMode":"acceptEdits"}}
+          EOF
+          docker run --rm \
+            -v "$PWD/smoke/data-roundtrip:/data:rw" \
+            -v "$PWD/smoke/ha-roundtrip:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-roundtrip-on.log
+          grep -q '\[WARN\] Unattended mode replaced your permissions.defaultMode: acceptEdits' \
+            smoke/boot-roundtrip-on.log
+          jq -e '.permissions.defaultMode == "bypassPermissions"' \
+            smoke/ha-roundtrip/.claudecode/settings.json >/dev/null \
+            || { echo "::error::round trip: on did not set bypassPermissions over acceptEdits"; exit 1; }
+          [ "$(cat smoke/ha-roundtrip/.claudecode/.defaultmode-before-unattended)" = "acceptEdits" ] \
+            || { echo "::error::round trip: sidecar does not hold the displaced defaultMode"; exit 1; }
+          sed 's/"unattended_mode": true/"unattended_mode": false/' \
+            smoke/data-roundtrip/options.json > smoke/data-roundtrip/options.json.new
+          mv smoke/data-roundtrip/options.json.new smoke/data-roundtrip/options.json
+          docker run --rm \
+            -v "$PWD/smoke/data-roundtrip:/data:rw" \
+            -v "$PWD/smoke/ha-roundtrip:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-roundtrip-off.log
+          grep -q '\[INFO\] Unattended mode off: restored your previous permissions.defaultMode: acceptEdits' \
+            smoke/boot-roundtrip-off.log
+          jq -e '.permissions.defaultMode == "acceptEdits"' \
+            smoke/ha-roundtrip/.claudecode/settings.json >/dev/null \
+            || { echo "::error::round trip: off did not restore the displaced defaultMode"; exit 1; }
+          if [ -e smoke/ha-roundtrip/.claudecode/.defaultmode-before-unattended ]; then
+            echo "::error::round trip: sidecar was not removed after the restore"; exit 1
+          fi
+
+          # Case 4: a malformed settings.json no longer costs the whole boot
+          # its defaultMode (the old ordering wrote defaultMode BEFORE the only
+          # repair path ran, so IS_SANDBOX was exported without the mode for a
+          # full session). The early repair backs the file up, resets it, and
+          # the unattended write then succeeds in the same boot.
+          mkdir -p smoke/data-corrupt-unatt smoke/ha-corrupt-unatt/.claudecode
+          cp smoke/data-unattended/options.json smoke/data-corrupt-unatt/options.json
+          printf '%s' '{"permissions":{"allow":["Read(/x)"],}}' \
+            > smoke/ha-corrupt-unatt/.claudecode/settings.json
+          docker run --rm \
+            -v "$PWD/smoke/data-corrupt-unatt:/data:rw" \
+            -v "$PWD/smoke/ha-corrupt-unatt:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-corrupt-unatt.log
+          grep -q 'was not valid JSON' smoke/boot-corrupt-unatt.log
+          jq -e '.permissions.defaultMode == "bypassPermissions"' \
+            smoke/ha-corrupt-unatt/.claudecode/settings.json >/dev/null \
+            || { echo "::error::corrupt settings: defaultMode missing after the early repair"; exit 1; }
+          ls smoke/ha-corrupt-unatt/.claudecode/settings.json.corrupt.* >/dev/null 2>&1 \
+            || { echo "::error::corrupt settings.json was not backed up by the early repair"; exit 1; }
+
+          # Case 5: unattended_mode together with guard_privileged_actions
+          # off removes both layers at once; the boot must say so loudly.
+          mkdir -p smoke/data-unatt-noguard smoke/ha-unatt-noguard
+          sed 's/"unattended_mode": true/"unattended_mode": true, "guard_privileged_actions": false/' \
+            smoke/data-unattended/options.json > smoke/data-unatt-noguard/options.json
+          docker run --rm \
+            -v "$PWD/smoke/data-unatt-noguard:/data:rw" \
+            -v "$PWD/smoke/ha-unatt-noguard:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-unatt-noguard.log
+          grep -q '\[WARN\] unattended_mode is on while guard_privileged_actions is off' \
+            smoke/boot-unatt-noguard.log
+
+          # Case 6: the preflight degrades gracefully on a CLI that dropped
+          # IS_SANDBOX support (the auto_update_claude drift scenario), and
+          # the degraded boot consumes the sidecar so a hand-set defaultMode
+          # still comes back, instead of leaving a stale bypassPermissions
+          # relaunch loop (the #33 shape) or orphaning the saved value. The
+          # stub claude sits in /data/npm-global/bin, which is first in PATH,
+          # and .seed-complete stops the boot re-seeding over it.
+          mkdir -p smoke/data-degraded/npm-global/bin smoke/ha-degraded/.claudecode
+          cp smoke/data-unattended/options.json smoke/data-degraded/options.json
+          printf '#!/bin/sh\nexit 0\n' > smoke/data-degraded/npm-global/bin/claude
+          chmod +x smoke/data-degraded/npm-global/bin/claude
+          touch smoke/data-degraded/npm-global/.seed-complete
+          cat > smoke/ha-degraded/.claudecode/settings.json <<'EOF'
+          {"permissions":{"defaultMode":"bypassPermissions"}}
+          EOF
+          printf '%s' 'acceptEdits' > smoke/ha-degraded/.claudecode/.defaultmode-before-unattended
+          docker run --rm \
+            -v "$PWD/smoke/data-degraded:/data:rw" \
+            -v "$PWD/smoke/ha-degraded:/homeassistant:rw" \
+            -v "$PWD/smoke/boot-sandboxprobe.sh:/usr/local/bin/boot-smoke.sh:ro" \
+            --entrypoint /bin/bash \
+            hass-claude-test:amd64 \
+            /usr/local/bin/boot-smoke.sh 2>&1 | tee smoke/boot-degraded.log
+          grep -q 'does not recognize the IS_SANDBOX override' smoke/boot-degraded.log
+          grep -q 'restored your previous permissions.defaultMode: acceptEdits' smoke/boot-degraded.log
+          jq -e '.permissions.defaultMode == "acceptEdits"' \
+            smoke/ha-degraded/.claudecode/settings.json >/dev/null \
+            || { echo "::error::degraded preflight did not restore the hand-set defaultMode"; exit 1; }
+          if [ -e smoke/ha-degraded/.claudecode/.defaultmode-before-unattended ]; then
+            echo "::error::degraded preflight left the sidecar behind"; exit 1
+          fi
+
+      - name: Claude CLI honors IS_SANDBOX under root (issue #39)
+        run: |
+          set -euo pipefail
+          mkdir -p smoke
+          # The whole point of unattended_mode is that IS_SANDBOX=1 makes the
+          # CLI accept bypassPermissions under UID 0. auto_update_claude moves
+          # the CLI under users, so drift here lands on real installs first
+          # unless CI actually launches the CLI. No credentials exist in CI,
+          # so the assertion is only about the ROOT refusal, which fires (or
+          # not) at startup before any API traffic. Control first: without
+          # IS_SANDBOX the refusal must appear; if it does not, the CLI has
+          # changed shape and the step warns instead of asserting blind.
+          docker run --rm --entrypoint /bin/bash hass-claude-test:amd64 \
+            -lc 'claude --version' | tee smoke/cli-version.txt
+          set +e
+          CONTROL="$(docker run --rm --entrypoint /bin/bash hass-claude-test:amd64 -lc \
+            'unset IS_SANDBOX; timeout 60 claude --dangerously-skip-permissions -p "exit" </dev/null 2>&1')"
+          WITH_SANDBOX="$(docker run --rm --entrypoint /bin/bash hass-claude-test:amd64 -lc \
+            'export IS_SANDBOX=1; timeout 60 claude --dangerously-skip-permissions -p "exit" </dev/null 2>&1')"
+          set -e
+          echo "--- control (no IS_SANDBOX), first lines: ---"
+          printf '%s\n' "$CONTROL" | head -5
+          echo "--- with IS_SANDBOX=1, first lines: ---"
+          printf '%s\n' "$WITH_SANDBOX" | head -5
+          REFUSAL='cannot be used with root'
+          if ! printf '%s' "$CONTROL" | grep -qi "$REFUSAL"; then
+            echo "::warning::root-refusal control did not fire; the CLI has changed shape and the IS_SANDBOX assertion was skipped"
+          elif printf '%s' "$WITH_SANDBOX" | grep -qi "$REFUSAL"; then
+            echo "::error::IS_SANDBOX=1 no longer suppresses the root refusal; unattended_mode is broken on this CLI ($(cat smoke/cli-version.txt))"
+            exit 1
+          else
+            echo "PASS IS_SANDBOX=1 suppresses the root refusal ($(cat smoke/cli-version.txt))"
+          fi
+
       - name: Boot repairs an install already broken by Glob/Grep rules (issue #33)
         run: |
           set -euo pipefail
@@ -569,6 +822,102 @@ jobs:
               *) echo "::error::deny reason is missing '$phrase' (got: $why)"; exit 1 ;;
             esac
           done
+          # --- Unattended promotion (issue #39 follow-up): while unattended,
+          # confirm-tier asks are promoted to deny (nobody can answer a
+          # prompt), signalled by the HA_GUARD_UNATTENDED env var the boot
+          # exports OR the unattended flag stamped into the policy file.
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
+          run_hook_u() {
+            printf '%s' "$1" | docker run --rm -i \
+              -e HA_GUARD_CONFIG=/guard/ha-guard.json \
+              -e HA_GUARD_UNATTENDED=1 \
+              -v "$PWD/smoke/guard:/guard:ro" \
+              --entrypoint /usr/local/bin/ha-privileged-guard.sh \
+              hass-claude-test:amd64
+          }
+          expect_u() { # $1 desc  $2 payload  $3 expected decision
+            local out got
+            out="$(run_hook_u "$2")"
+            if [ -z "$out" ]; then got=allow; else got="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision')"; fi
+            if [ "$got" = "$3" ]; then
+              echo "PASS [$3] (unattended) $1"
+            else
+              echo "::error::guard hook unattended '$1': expected $3 got '$got' (raw: $out)"
+              exit 1
+            fi
+          }
+          expect_u "restart promoted to deny"        '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' deny
+          expect_u "restart_ha tool promoted"        '{"tool_name":"mcp__homeassistant__restart_ha","tool_input":{}}'                                                     deny
+          expect_u "ha su restart promoted"          '{"tool_name":"Bash","tool_input":{"command":"ha su restart"}}'                                                      deny
+          expect_u "stop still denied"               '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"stop"}}'    deny
+          expect_u "light.turn_on still allowed"     '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"light","service":"turn_on"}}'         allow
+          # The promoted reason must explain the unattended refusal and stay
+          # free of bypass recipes, like every other deny reason.
+          uwhy="$(run_hook_u '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' \
+            | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+          for phrase in "unattended_mode" "do NOT hand the user"; do
+            case "$uwhy" in
+              *"$phrase"*) echo "PASS promoted reason contains: $phrase" ;;
+              *) echo "::error::promoted reason is missing '$phrase' (got: $uwhy)"; exit 1 ;;
+            esac
+          done
+          # Policy-file flag alone (a docker exec shell has no boot env).
+          printf '%s' '{"enabled":true,"deny":[],"confirm":[],"unattended":true}' > smoke/guard/ha-guard.json
+          expect "policy-flag unattended promotes"    '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' deny
+          printf '%s' '{"enabled":true,"deny":[],"confirm":[],"unattended":false}' > smoke/guard/ha-guard.json
+          expect "unattended:false still asks"        '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' ask
+          # Env var alone with a MISSING policy file: the fail-closed baseline
+          # must be promoted too (a file-borne flag cannot reach this path).
+          pmissing="$(printf '%s' '{"tool_name":"mcp__homeassistant__call_service_tool","tool_input":{"domain":"homeassistant","service":"restart"}}' \
+            | docker run --rm -i -e HA_GUARD_CONFIG=/guard/does-not-exist.json -e HA_GUARD_UNATTENDED=1 \
+                -v "$PWD/smoke/guard:/guard:ro" \
+                --entrypoint /usr/local/bin/ha-privileged-guard.sh hass-claude-test:amd64)"
+          if printf '%s' "$pmissing" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null; then
+            echo "PASS [deny] promotion holds with missing policy file (env var path)"
+          else
+            echo "::error::promotion did not hold with a missing policy file (got: $pmissing)"
+            exit 1
+          fi
+          # --- Guard-file tamper protection: Write/Edit onto the guard's own
+          # policy file are denied on both path spellings; the settings file
+          # (hook registration + deny floor) asks when attended and is refused
+          # when unattended; ordinary files are untouched. Bash writes onto
+          # the same files are caught in their obvious forms, reads are not.
+          printf '%s' '{"enabled":true,"deny":["homeassistant.stop","supervisor.core_stop","supervisor.watchdog_disable","hassio.host_reboot","hassio.host_shutdown","hassio.os_update"],"confirm":["homeassistant.restart","hassio.supervisor_restart"]}' > smoke/guard/ha-guard.json
+          expect "Write guard policy file"            '{"tool_name":"Write","tool_input":{"file_path":"/root/.claude/ha-guard.json","content":"{}"}}'                     deny
+          expect "Write policy via persist path"      '{"tool_name":"Write","tool_input":{"file_path":"/homeassistant/.claudecode/ha-guard.json","content":"{}"}}'        deny
+          expect "Edit settings.json (attended)"      '{"tool_name":"Edit","tool_input":{"file_path":"/root/.claude/settings.json","old_string":"a","new_string":"b"}}'   ask
+          expect_u "Edit settings.json (unattended)"  '{"tool_name":"Edit","tool_input":{"file_path":"/root/.claude/settings.json","old_string":"a","new_string":"b"}}'   deny
+          expect "Write configuration.yaml (safe)"    '{"tool_name":"Write","tool_input":{"file_path":"/homeassistant/configuration.yaml","content":"x"}}'                allow
+          expect "Write CLAUDE.md (safe)"             '{"tool_name":"Write","tool_input":{"file_path":"/root/.claude/CLAUDE.md","content":"x"}}'                          allow
+          expect "bash redirect onto policy file"     '{"tool_name":"Bash","tool_input":{"command":"jq \".enabled=false\" /root/.claude/ha-guard.json > /root/.claude/ha-guard.json"}}' deny
+          expect "bash tee onto persist policy"       '{"tool_name":"Bash","tool_input":{"command":"echo {} | tee /homeassistant/.claudecode/ha-guard.json"}}'            deny
+          expect "bash cp onto settings (attended)"   '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/settings.json /root/.claude/settings.json"}}'                 ask
+          expect "bash cat policy file (safe)"        '{"tool_name":"Bash","tool_input":{"command":"cat /root/.claude/ha-guard.json"}}'                                   allow
+          expect "bash cp settings to backup (safe)"  '{"tool_name":"Bash","tool_input":{"command":"cp /root/.claude/settings.json /tmp/settings-backup.json"}}'          allow
+          expect "bash grep settings (safe)"          '{"tool_name":"Bash","tool_input":{"command":"grep defaultMode /root/.claude/settings.json"}}'                      allow
+          expect "bash redirect to sibling (safe)"    '{"tool_name":"Bash","tool_input":{"command":"jq . /root/.claude/settings.json > /root/.claude/settings.json.bak"}}' allow
+          # A trailing redirection or comment after the destination must not
+          # defeat the mv/cp pattern, and a cp FROM a guard file stays a read.
+          expect "bash cp onto policy w/ redirect"    '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/x.json /root/.claude/ha-guard.json 2>/dev/null"}}'            deny
+          expect "bash cp guard file to backup (safe)" '{"tool_name":"Bash","tool_input":{"command":"cp -f /root/.claude/ha-guard.json /tmp/bak"}}'                       allow
+          # A write shape quoted as DATA must stay allowed (the same
+          # data-vs-command rule the ha CLI matcher enforces), while a
+          # genuinely quoted destination path still counts as a write.
+          expect "bash grep quoting tee (safe)"       '{"tool_name":"Bash","tool_input":{"command":"grep -n \"tee /root/.claude/ha-guard.json\" notes.md"}}'              allow
+          expect "bash echo quoting cp (safe)"        '{"tool_name":"Bash","tool_input":{"command":"echo \"to restore: cp /tmp/x /root/.claude/settings.json\""}}'        allow
+          expect "bash echo quoting redirect (safe)"  '{"tool_name":"Bash","tool_input":{"command":"echo \"never do: > /root/.claude/ha-guard.json\""}}'                  allow
+          expect "bash tee quoted path"               '{"tool_name":"Bash","tool_input":{"command":"printf %s {} | tee \"/root/.claude/ha-guard.json\""}}'                deny
+          # The policy-file tamper reason must point at the app options, not
+          # at any way to reach the file.
+          twhy="$(run_hook '{"tool_name":"Write","tool_input":{"file_path":"/root/.claude/ha-guard.json","content":"{}"}}' \
+            | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+          for phrase in "Configuration tab" "do NOT hand the user"; do
+            case "$twhy" in
+              *"$phrase"*) echo "PASS tamper reason contains: $phrase" ;;
+              *) echo "::error::tamper reason is missing '$phrase' (got: $twhy)"; exit 1 ;;
+            esac
+          done
 
       - name: Privileged-action guard configurator (issue #29)
         run: |
@@ -617,6 +966,16 @@ jobs:
           assert "disable removes our floor"    '(.permissions.deny|index("Bash(ha core stop:*)"))==null'
           assert "disable removes our hook"     '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="'"$H"'")]|length==0'
           assert "disable keeps user hook"      '[.hooks.PreToolUse[]?|select((.hooks[]?.command)=="/usr/local/bin/user-audit.sh")]|length==1'
+          # unattended_mode is stamped into the policy file so the hook can
+          # promote confirm-tier asks to denies (issue #39 follow-up).
+          run_cfg '{"unattended_mode": true}'
+          jq -e '.unattended == true' smoke/cfg/ha-guard.json >/dev/null \
+            || { echo "::error::unattended_mode:true was not stamped into ha-guard.json"; exit 1; }
+          echo "PASS configurator stamps unattended:true"
+          run_cfg '{}'
+          jq -e '.unattended == false' smoke/cfg/ha-guard.json >/dev/null \
+            || { echo "::error::ha-guard.json should carry unattended:false by default"; exit 1; }
+          echo "PASS configurator stamps unattended:false by default"
           # Corrupt (non-empty, invalid JSON) settings.json -> backup + reset + install.
           rm -f smoke/cfg/settings.json.corrupt.*
           write_cfg settings.json '{"permissions":{"allow":["Read(/x)"],}}'

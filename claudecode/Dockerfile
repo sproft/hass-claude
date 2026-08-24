@@ -213,6 +213,7 @@ CMD ["/bin/bash", "-c", "\
     '- NEVER autonomously stop Core, reboot or shut down the host, disable the watchdog, or start an OS or host update. Name the action you would need and let the user carry it out from the Home Assistant UI (Settings > System).' \
     '- After ANY service call meant to change state, VERIFY the result by re-reading the entity or state afterwards. A call can return success yet do nothing (for example an orphaned automation entity that survived a rename), so never trust the return value alone.' \
     '- If the guard blocks or asks about an action, do not try to route around it with an alternate curl, ha CLI, or REST call. Explain to the user what you need and why.' \
+    '- When unattended_mode is on, actions that normally require human confirmation are refused instead of prompted, because nobody is present to answer. Do not retry them or look for another route; note what was refused and let the user run it in an attended session or from the Home Assistant UI.' \
     '- Do NOT hand the user a shell command, an escape prefix, or any other recipe for bypassing the guard, even if they ask how. Point them at the Home Assistant UI, or at the app options guard_privileged_actions / disallow_actions if they want the policy itself relaxed. Naming the action and letting them decide is the whole point of the boundary.' \
     > $PERSIST_DIR/CLAUDE.md && \
   if [ ! -L /root/.claude ]; then rm -rf /root/.claude; ln -s $PERSIST_DIR /root/.claude; fi && \
@@ -244,6 +245,15 @@ CMD ["/bin/bash", "-c", "\
   SESSION_PERSIST=$(jq -r '.session_persistence // false' /data/options.json) && \
   AUTO_CONTINUE=$(jq -r '.auto_continue // false' /data/options.json) && \
   ENABLE_MCP=$(jq -r 'if .enable_mcp == false then false else true end' /data/options.json) && \
+  UNATTENDED_MODE=$(jq -r 'if .unattended_mode == true then true else false end' /data/options.json) && \
+  if [ \"$UNATTENDED_MODE\" = \"true\" ]; then \
+    export IS_SANDBOX=1 HA_GUARD_UNATTENDED=1; \
+    echo '[INFO] Unattended mode: IS_SANDBOX=1 exported for this session'; \
+    echo '[INFO] Unattended mode: HA_GUARD_UNATTENDED=1 exported for the privileged-action guard'; \
+    if [ \"$(jq -r 'if .guard_privileged_actions == false then true else false end' /data/options.json)\" = \"true\" ]; then \
+      echo '[WARN] unattended_mode is on while guard_privileged_actions is off: Claude runs as root with no permission prompts and no guard. This combination is not recommended; turn the guard back on.'; \
+    fi; \
+  fi && \
   AUTO_UPDATE=$(jq -r '.auto_update_claude // false' /data/options.json) && \
   UPDATE_TIMEOUT=$(jq -r '.claude_update_timeout // 300' /data/options.json) && \
   WORK_DIR=$(jq -r '.working_directory // empty' /data/options.json) && \
@@ -256,6 +266,12 @@ CMD ["/bin/bash", "-c", "\
   CLAUDE_JSON=/root/.claude.json && \
   mkdir -p \"$(dirname \"$SETTINGS_FILE\")\" && \
   { [ -s \"$SETTINGS_FILE\" ] || echo '{}' > \"$SETTINGS_FILE\"; } && \
+  if ! jq -e . \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+    SETTINGS_BAK=\"$SETTINGS_FILE.corrupt.$(date +%s)\"; \
+    cp -f \"$SETTINGS_FILE\" \"$SETTINGS_BAK\" 2>/dev/null || true; \
+    echo '{}' > \"$SETTINGS_FILE\"; \
+    echo \"[ERROR] $SETTINGS_FILE was not valid JSON; backed it up to $SETTINGS_BAK and reset it so this boot's settings edits can run instead of silently failing one by one. Re-merge any custom settings from the backup.\"; \
+  fi && \
   { [ -s \"$CLAUDE_JSON\" ] || echo '{}' > \"$CLAUDE_JSON\"; } && \
   if jq -e 'has(\"mcpServers\")' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
     if jq 'del(.mcpServers)' \"$SETTINGS_FILE\" > /tmp/settings.nomcp 2>/dev/null && jq -e . /tmp/settings.nomcp >/dev/null 2>&1; then \
@@ -294,6 +310,55 @@ CMD ["/bin/bash", "-c", "\
     echo '[INFO] MCP disabled'; \
   fi && \
   { bash /usr/local/bin/ha-guard-configure.sh \"$SETTINGS_FILE\" || echo '[WARN] privileged-action guard configuration failed'; } && \
+  SIDECAR=\"$PERSIST_DIR/.defaultmode-before-unattended\" && \
+  if [ \"$UNATTENDED_MODE\" = \"true\" ]; then \
+    CLI_BIN=$(command -v claude 2>/dev/null || echo /data/npm-global/bin/claude); \
+    CLI_REAL=$(readlink -f \"$CLI_BIN\" 2>/dev/null || echo \"$CLI_BIN\"); \
+    if [ -e \"$CLI_REAL\" ] && ! grep -qs IS_SANDBOX \"$CLI_REAL\"; then \
+      echo '[ERROR] The installed Claude Code CLI does not recognize the IS_SANDBOX override, so permissions.defaultMode: bypassPermissions would make it refuse to launch as root on every start. Leaving the normal prompting mode in place; unattended_mode is degraded until a CLI version that supports IS_SANDBOX is installed.'; \
+      if jq -e '.permissions.defaultMode == \"bypassPermissions\"' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+        SAVED_MODE=''; \
+        if [ -f \"$SIDECAR\" ]; then SAVED_MODE=$(cat \"$SIDECAR\" 2>/dev/null || echo ''); fi; \
+        case \"$SAVED_MODE\" in default|acceptEdits|plan) ;; *) SAVED_MODE='';; esac; \
+        if [ -n \"$SAVED_MODE\" ] && jq --arg m \"$SAVED_MODE\" '.permissions.defaultMode = $m' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+          mv /tmp/settings.unattended \"$SETTINGS_FILE\" && rm -f \"$SIDECAR\" && \
+          echo \"[ERROR] Removed the permissions.defaultMode: bypassPermissions an earlier boot wrote and restored your previous permissions.defaultMode: $SAVED_MODE, so the session can still launch\"; \
+        elif jq 'del(.permissions.defaultMode)' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+          mv /tmp/settings.unattended \"$SETTINGS_FILE\" && rm -f \"$SIDECAR\" && \
+          echo '[ERROR] Removed the permissions.defaultMode: bypassPermissions an earlier boot wrote, so the session can still launch'; \
+        else rm -f /tmp/settings.unattended; fi; \
+      fi; \
+    else \
+      PREV_MODE=$(jq -r '.permissions.defaultMode // empty' \"$SETTINGS_FILE\" 2>/dev/null || echo ''); \
+      if [ -n \"$PREV_MODE\" ] && [ \"$PREV_MODE\" != \"bypassPermissions\" ]; then \
+        printf '%s' \"$PREV_MODE\" > \"$SIDECAR\"; \
+        echo \"[WARN] Unattended mode replaced your permissions.defaultMode: $PREV_MODE (it will be restored when unattended_mode is turned off)\"; \
+      fi; \
+      if jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"bypassPermissions\"' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+        mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
+        echo '[INFO] Unattended mode: permissions.defaultMode set to bypassPermissions'; \
+      else \
+        rm -f /tmp/settings.unattended; \
+        echo '[WARN] Failed to set permissions.defaultMode for unattended mode'; \
+      fi; \
+    fi; \
+  elif jq -e '.permissions.defaultMode == \"bypassPermissions\"' \"$SETTINGS_FILE\" >/dev/null 2>&1; then \
+    SAVED_MODE=''; \
+    if [ -f \"$SIDECAR\" ]; then SAVED_MODE=$(cat \"$SIDECAR\" 2>/dev/null || echo ''); fi; \
+    case \"$SAVED_MODE\" in default|acceptEdits|plan) ;; *) SAVED_MODE='';; esac; \
+    if [ -n \"$SAVED_MODE\" ] && jq --arg m \"$SAVED_MODE\" '.permissions.defaultMode = $m' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+      mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
+      echo \"[INFO] Unattended mode off: restored your previous permissions.defaultMode: $SAVED_MODE\"; \
+    elif jq 'del(.permissions.defaultMode)' \"$SETTINGS_FILE\" > /tmp/settings.unattended 2>/dev/null && jq -e . /tmp/settings.unattended >/dev/null 2>&1; then \
+      mv /tmp/settings.unattended \"$SETTINGS_FILE\" && \
+      echo '[INFO] Unattended mode off: removed a stale permissions.defaultMode: bypassPermissions (from a previous boot, or hand-edited) so the session does not hit the root/bypassPermissions launch failure'; \
+    else \
+      rm -f /tmp/settings.unattended; \
+    fi; \
+    rm -f \"$SIDECAR\"; \
+  else \
+    rm -f \"$SIDECAR\"; \
+  fi && \
   if [ \"$AUTO_UPDATE\" = \"true\" ]; then \
     UPDATE_LOG=/tmp/claude-update.log; \
     echo \"[INFO] Updating Claude Code in background (timeout ${UPDATE_TIMEOUT}s)...\"; \
